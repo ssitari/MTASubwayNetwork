@@ -1,0 +1,269 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NYC Subway Trip Network</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      display: flex;
+      height: 100vh;
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      background: #141414;
+      color: #ccc;
+    }
+
+    /* ── Controls panel ── */
+    #controls {
+      width: 248px;
+      flex-shrink: 0;
+      background: #1c1c1c;
+      border-right: 1px solid #2e2e2e;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 14px;
+      gap: 15px;
+      overflow-y: auto;
+    }
+
+    #controls h1 {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      color: #eee;
+    }
+
+    .control-group { display: flex; flex-direction: column; gap: 6px; }
+    .control-group > label {
+      font-weight: 600;
+      color: #777;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: .05em;
+    }
+
+    .radio-group { display: flex; flex-direction: column; gap: 5px; }
+    .radio-group label {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 13px; font-weight: 400; color: #bbb;
+      text-transform: none; letter-spacing: 0;
+      cursor: pointer;
+    }
+
+    .slider-row { display: flex; align-items: center; gap: 8px; }
+    input[type=range] { flex: 1; cursor: pointer; accent-color: #4e79a7; min-width: 0; }
+    .slider-val {
+      font-variant-numeric: tabular-nums; white-space: nowrap;
+      color: #999; font-size: 12px; min-width: 2.2em; text-align: right;
+    }
+
+    #play {
+      border: 1px solid #3a3a3a; background: #252525; color: #ccc;
+      border-radius: 4px; cursor: pointer; padding: 3px 9px;
+      font: inherit; font-size: 12px; flex-shrink: 0;
+    }
+    #play:hover { background: #303030; color: #eee; }
+
+    .hint { font-size: 11px; color: #6a6a6a; line-height: 1.5; }
+
+    /* ── Search ── */
+    #search {
+      width: 100%; padding: 5px 8px; font: inherit; font-size: 12px;
+      background: #252525; color: #ddd;
+      border: 1px solid #3a3a3a; border-radius: 4px;
+    }
+    #search:focus { outline: none; border-color: #4e79a7; }
+    #search::placeholder { color: #666; }
+
+    /* ── Selected station readout ── */
+    #selected {
+      background: #202020; border: 1px solid #313131; border-radius: 4px;
+      padding: 8px 10px; line-height: 1.55;
+    }
+    #selected .sel-name { color: #eee; font-weight: 700; font-size: 13px; }
+    #selected .sel-sub { color: #7d7d7d; font-size: 11px; }
+    #selected .num { font-variant-numeric: tabular-nums; }
+
+    /* ── Stats ── */
+    #stats {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid #2e2e2e;
+      font-size: 11px;
+      color: #666;
+      line-height: 1.8;
+    }
+    #stats strong { color: #aaa; font-variant-numeric: tabular-nums; }
+
+    /* ── Legend ── */
+    #legend { display: flex; flex-wrap: wrap; gap: 4px 10px; }
+    .legend-item { display: flex; align-items: center; gap: 5px; font-size: 11px; color: #aaa; }
+    .swatch { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+
+    /* ── Panels ── */
+    #chart-container, #map-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    #map-container { border-left: 1px solid #2e2e2e; }
+    #chart, #map { width: 100%; height: 100%; display: block; }
+
+    .panel-title {
+      position: absolute; top: 10px; left: 12px;
+      font-size: 11px; font-weight: 600; color: #777;
+      text-transform: uppercase; letter-spacing: .05em;
+      pointer-events: none;
+    }
+    .panel-sub {
+      position: absolute; top: 26px; left: 12px;
+      font-size: 11px; color: #5f5f5f;
+      pointer-events: none; max-width: 60%;
+    }
+
+    /* ── Tooltip ── */
+    #tooltip {
+      position: fixed;
+      display: none;
+      background: rgba(0,0,0,.92);
+      color: #eee;
+      padding: 8px 11px;
+      border-radius: 5px;
+      font-size: 12px;
+      line-height: 1.6;
+      pointer-events: none;
+      z-index: 10;
+      max-width: 260px;
+      border: 1px solid #333;
+    }
+    #tooltip strong { font-size: 13px; }
+    #tooltip .num { font-variant-numeric: tabular-nums; }
+    #tooltip .routes { color: #8f8f8f; font-size: 11px; }
+
+    /* ── Loading overlay ── */
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      color: #666;
+      background: #141414;
+      z-index: 5;
+    }
+
+    hr { border: none; border-top: 1px solid #2e2e2e; }
+  </style>
+</head>
+<body>
+
+<div id="controls">
+  <h1>Where the Subway Goes<br>Trip flows between station complexes, 2025</h1>
+
+  <div class="control-group">
+    <label>Time of day</label>
+    <div class="slider-row">
+      <button id="play" type="button">▶</button>
+      <div class="radio-group" id="period-group" style="flex:1"></div>
+    </div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Station</label>
+    <input type="text" id="search" placeholder="Search station complexes…" autocomplete="off" list="station-list">
+    <datalist id="station-list"></datalist>
+    <div id="selected"></div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Edge weight</label>
+    <div class="radio-group">
+      <label><input type="radio" name="metric" value="share" checked> Share of the station's riders</label>
+      <label><input type="radio" name="metric" value="riders"> Estimated riders</label>
+    </div>
+    <div class="hint" id="metric-hint"></div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Destinations shown</label>
+    <div class="slider-row">
+      <input type="range" id="topn-slider" min="5" max="50" step="1" value="25">
+      <span class="slider-val" id="topn-val">25</span>
+    </div>
+    <div class="hint">The network draws only this many destinations. The map always keeps all 424 complexes.</div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>
+      <input type="checkbox" id="second-order" checked style="accent-color:#4e79a7">
+      Link destinations to each other
+    </label>
+    <div class="hint">Adds edges among the destinations themselves, so the graph shows clusters rather than a bare star.</div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Trunk line</label>
+    <div id="legend"></div>
+  </div>
+
+  <div id="stats">
+    <div>Network edges: <strong id="stat-edges">—</strong></div>
+    <div>Riders covered: <strong id="stat-coverage">—</strong></div>
+    <div>Trips this period: <strong id="stat-trips">—</strong></div>
+  </div>
+</div>
+
+<div id="chart-container">
+  <div id="loading">Loading subway data…</div>
+  <div class="panel-title">Network</div>
+  <div class="panel-sub" id="network-sub"></div>
+  <svg id="chart"></svg>
+</div>
+
+<div id="map-container">
+  <div class="panel-title">Map</div>
+  <div class="panel-sub" id="map-sub"></div>
+  <svg id="map"></svg>
+</div>
+
+<div id="tooltip"></div>
+
+<style>
+  /* body is a row flex at 100vh, so a footer cannot be a flex child here
+     without becoming a third column -- it is pinned instead. */
+  .page-credit {
+    position: fixed; right: 0; top: 0; z-index: 50;
+    padding: 4px 10px;
+    font: 11px/1.35 system-ui, sans-serif;
+    color: #8a8a8a; background: rgba(20,20,20,0.88);
+    border-bottom-left-radius: 4px;
+    pointer-events: none;
+  }
+  .page-credit a { color: #b9b9b9; pointer-events: auto; }
+  .page-credit a:hover { color: #e8e8e8; }
+</style>
+<footer class="page-credit">
+  Data:
+  <a href="https://data.ny.gov/d/y2qv-fytt" rel="noopener" target="_blank">MTA Subway Origin-Destination Ridership Estimate, 2025</a>.
+  Source code and method notes:
+  <a href="https://github.com/ssitari/MTASubwayNetwork" rel="noopener" target="_blank">ssitari/MTASubwayNetwork</a>.
+</footer>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
