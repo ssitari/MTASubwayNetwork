@@ -34,11 +34,20 @@ Weekdays only (Mon-Fri), averaged over all months of 2025, binned into four peri
 (n_months * 5 weekdays) yields *average riders on a typical weekday* in that period.
 
 Edges are the top N destinations per origin per period (see TOP_N).  The map keeps
-all 424 complexes; only the network is pruned.  This asymmetry is deliberate.
+every complex; only the network is pruned.  This asymmetry is deliberate.
+
+Output contract
+---------------
+This script is the MTA-specific half of the tool.  Everything it knows about the
+subway stops at the file it writes: app.js reads a generic origin-destination
+document -- `nodes` with coordinates and a group colour, and an `ego` map of each
+node's top-N destinations per period -- and never mentions trains.  To point the
+same viewer at different flows (airline routes, phone calls, commutes), write a
+different builder that emits the same shape.  DATA_FORMAT.md is the spec.
 """
 
 import json, os, re, time
-from collections import defaultdict
+from collections import Counter, defaultdict
 import requests
 
 URL     = "https://data.ny.gov/resource/y2qv-fytt.json"
@@ -58,6 +67,9 @@ PERIODS = [
 
 # MTA trunk-line colors, used to color network nodes by the first route serving
 # the complex.  A complex served by several trunks takes its first listed route.
+# This list's order is also the legend's order -- it ships as meta.group_order, so
+# the viewer does not have to infer a sensible ordering from whatever sequence the
+# nodes happen to arrive in.
 TRUNK = [
     (set("123"),  "#EE352E", "1/2/3"),
     (set("456"),  "#00933C", "4/5/6"),
@@ -99,11 +111,42 @@ def soql(params, label, tries=8):
 PAGE = 50000
 
 
+# A parenthesised group in an MTA complex name is usually a route list -- "(N,W)",
+# "(1,2,3)" -- but not always: "Cathedral Pkwy (110 St) (C,B)" carries a cross-street
+# too. Route designators are one to three alphanumerics with no spaces, which
+# separates the two cleanly (checked against all 80 distinct groups in the data:
+# "110 St" is the only non-route one).
+ROUTE_TOKEN = re.compile(r"[A-Za-z0-9]{1,3}\Z")
+
+
+def _is_route_group(g):
+    toks = [t.strip() for t in g.split(",") if t.strip()]
+    return bool(toks) and all(ROUTE_TOKEN.match(t) for t in toks)
+
+
 def routes_of(name):
-    m = re.search(r"\(([^()]*)\)\s*$", name)
-    if not m:
-        return []
-    return [t.strip() for t in m.group(1).split(",") if t.strip()]
+    """Every route serving the complex, across all of the name's route groups.
+
+    Twenty complexes are transfers between two named stations -- "Times Sq-42 St
+    (N,Q,R,W,S,1,2,3,7)/42 St (A,C,E)" -- and reading only the last group would
+    have described Times Square as an A/C/E station serving three routes.
+    """
+    out = []
+    for g in re.findall(r"\(([^()]*)\)", name):
+        if not _is_route_group(g):
+            continue
+        for t in g.split(","):
+            t = t.strip()
+            if t and t not in out:
+                out.append(t)
+    return out
+
+
+def strip_routes(name):
+    """The name with its route groups removed, keeping any other parenthetical."""
+    out = re.sub(r"\s*\(([^()]*)\)",
+                 lambda m: "" if _is_route_group(m.group(1)) else m.group(0), name)
+    return out.strip()
 
 
 def trunk_of(routes):
@@ -117,6 +160,21 @@ def trunk_of(routes):
             if head in members:
                 return color, label
     return SHUTTLE
+
+
+def short_names(names):
+    """Graph labels: each name minus its trailing route list, where that is unambiguous.
+
+    The parenthesis is the ONLY thing separating six different "86 St" complexes from
+    one another, so stripping it blind would hang an unidentifiable label on 133 of the
+    424 nodes -- and "86 St -> 23 St" in a tooltip would name nothing at all.  Names that
+    survive the strip uniquely get the short form; names that would collide keep the full
+    one.  Computed here rather than in app.js because it needs the whole node list to know
+    which names collide.
+    """
+    bare = [strip_routes(n) for n in names]
+    counts = Counter(bare)
+    return [b if counts[b] == 1 else n for n, b in zip(names, bare)]
 
 
 def fetch_stations():
@@ -242,13 +300,30 @@ def main():
         raise SystemExit("ERROR: %d complex ids absent from the station list: %s"
                          % (len(unknown), sorted(unknown)))
 
-    for s in stations:
-        s["routes"] = routes_of(s["name"])
-        s["trunk"], s["trunk_label"] = trunk_of(s["routes"])
+    # Field names here are the generic ones app.js reads -- `group` rather than `trunk`,
+    # `tags` rather than `routes` -- so that everything MTA about this dataset is the
+    # *content* of those fields, not their names.  See DATA_FORMAT.md.
+    shorts = short_names([s["name"] for s in stations])
+    for s, short in zip(stations, shorts):
+        s["tags"] = routes_of(s["name"])
+        s["short"] = short
+        s["group"], s["group_label"] = trunk_of(s["tags"])
         s["lat"] = round(float(s["lat"]), 6)
         s["lon"] = round(float(s["lon"]), 6)
         s["out"] = [round(out_tot[s["id"]].get(p, 0.0), 1) for p in pkeys]
         s["in"] = [round(in_tot[s["id"]].get(p, 0.0), 1) for p in pkeys]
+
+    ambiguous = sum(1 for s, b in zip(stations, shorts) if b == s["name"])
+    print("%d of %d node labels kept their route list to stay unambiguous"
+          % (ambiguous, len(stations)))
+
+    # Legend order, as a list of [label, color] in TRUNK order.  Only groups actually
+    # present are shipped, so a filtered rebuild does not legend empty categories.
+    present = set(s["group_label"] for s in stations)
+    group_order = [[label, color] for _, color, label in TRUNK if label in present]
+    for color, label in (SIR, SHUTTLE):
+        if label in present:
+            group_order.append([label, color])
 
     cov = dict((p, round(sorted(coverage[p])[len(coverage[p]) // 2], 4)) for p in pkeys)
     print("median top-%d coverage per period: %s" % (TOP_N, cov))
@@ -264,13 +339,17 @@ def main():
             "units": "estimated average riders on a typical weekday, per period",
             "top_n": TOP_N,
             "median_top_n_coverage": cov,
+            "group_order": group_order,
             "note": ("estimated_average_ridership is modeled, not counted: origins come from "
                      "fare transactions, destinations are inferred by MTA. Values are "
                      "fractional and should be read as estimates."),
             "generated": time.strftime("%Y-%m-%d"),
         },
-        "periods": [{"key": k, "label": l, "n_hours": len(h)} for k, l, h in PERIODS],
-        "stations": stations,
+        # `note` is free text appended to each period's label in the UI, e.g. "AM peak (4h)".
+        # Omit it and the label stands alone -- a dataset with no time dimension ships a
+        # single period and the viewer hides the period control entirely.
+        "periods": [{"key": k, "label": l, "note": "%dh" % len(h)} for k, l, h in PERIODS],
+        "nodes": stations,
         "ego": ego,
     }
     os.makedirs("data", exist_ok=True)

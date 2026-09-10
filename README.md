@@ -56,8 +56,9 @@ and the map does not.
   colored by trunk line. With *Link destinations to each other* on, edges among the destinations
   themselves are drawn too, which is what turns a bare star into a graph with visible clusters.
 - **Map (right)** — all 424 complexes, shaded by flow from the selection on a sequential scale.
-  Complexes outside the selection's top 50 stay unshaded. The map is drawn from the *full*
-  destination list, so it shows more than the network does.
+  Complexes outside the selection's top 50 stay unshaded. The map is drawn from the complete
+  *stored* destination list — all 50 — while the network draws only as many as the slider asks
+  for, so the map always shows at least as much as the network does.
 - **Time of day** — four periods; the play button cycles them. Watching the AM and PM peaks in
   sequence is the point of the time dimension: the same station's flows largely reverse.
 - **Destinations shown** — prunes the network without touching the map.
@@ -66,6 +67,11 @@ and the map does not.
 
 MTA, [Subway Origin-Destination Ridership Estimate,
 2025](https://data.ny.gov/d/y2qv-fytt), via the New York State Open Data portal.
+
+Every figure quoted below and above — the 424 complexes, the concentration shares, the coverage
+table — is measured against the build committed here (`meta.generated` in the data file). Re-run
+the build against a different year and they will move; the page reads its own numbers from the
+data, but this README does not.
 
 Four things about this source are worth knowing before drawing conclusions:
 
@@ -144,8 +150,35 @@ resumes where it stopped.
 
 | File | What it is |
 |---|---|
-| `data/subway_network.json` | 424 complexes with coordinates, routes, trunk color, and per-period boardings/arrivals; plus each complex's top-50 destinations per period |
+| `data/subway_network.json` | 424 complexes with coordinates, routes, trunk color, and per-period boardings/arrivals; plus each complex's top-50 destinations per period. Shape is specified in [DATA_FORMAT.md](DATA_FORMAT.md) |
 | `data/boroughs.geojson` | Five boroughs, WGS 84, simplified for use as a backdrop |
+
+---
+
+## Using this with your own data
+
+The viewer is not subway-specific. `app.js` reads a generic origin-destination document —
+placed nodes, plus each node's top destinations per period — and takes every word it says
+about itself from `config.js`. Nothing in it mentions trains.
+
+To point it at different flows:
+
+1. **Write a data file** matching [DATA_FORMAT.md](DATA_FORMAT.md). Any language; the shape is
+   what matters. `build_subway_data.py` is one producer of it, not the only possible one.
+2. **Edit [`config.js`](config.js)** — the data file's path, the page title and credit, and the
+   vocabulary block that decides whether the page talks about *station complexes and riders* or
+   *airports and passengers*.
+3. **Serve it.** You should not need to touch `index.html` or `app.js`.
+
+Anything that depends on the data — how many nodes there are, how deep the stored destination
+lists go, what the colour legend says — is read from the data file at load rather than set in
+config, so those can't drift out of sync with what is actually being drawn. If the data file
+doesn't fit the contract, the page says which part is wrong instead of failing silently.
+
+What travels well: any flow measured between fixed places over a repeating time slice —
+commutes, migration, airline routes, trade, citations between institutions. What does not: flows
+whose endpoints aren't points on a map, and datasets small enough that pruning to a top-N ego
+network throws away the interesting part.
 
 ---
 

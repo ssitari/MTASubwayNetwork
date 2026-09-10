@@ -3,7 +3,9 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>NYC Subway Trip Network</title>
+  <!-- Title, headings and every other word on the page are written by app.js
+       from config.js. This file carries structure only. -->
+  <title>Network</title>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -67,7 +69,7 @@
     }
     #play:hover { background: #303030; color: #eee; }
 
-    .hint { font-size: 11px; color: #6a6a6a; line-height: 1.5; }
+    .hint { font-size: 11px; color: #7d7d7d; line-height: 1.5; }
 
     /* ── Search ── */
     #search {
@@ -76,15 +78,15 @@
       border: 1px solid #3a3a3a; border-radius: 4px;
     }
     #search:focus { outline: none; border-color: #4e79a7; }
-    #search::placeholder { color: #666; }
+    #search::placeholder { color: #6f6f6f; }
 
-    /* ── Selected station readout ── */
+    /* ── Selected node readout ── */
     #selected {
       background: #202020; border: 1px solid #313131; border-radius: 4px;
       padding: 8px 10px; line-height: 1.55;
     }
     #selected .sel-name { color: #eee; font-weight: 700; font-size: 13px; }
-    #selected .sel-sub { color: #7d7d7d; font-size: 11px; }
+    #selected .sel-sub { color: #8a8a8a; font-size: 11px; }
     #selected .num { font-variant-numeric: tabular-nums; }
 
     /* ── Stats ── */
@@ -93,7 +95,7 @@
       padding-top: 12px;
       border-top: 1px solid #2e2e2e;
       font-size: 11px;
-      color: #666;
+      color: #777;
       line-height: 1.8;
     }
     #stats strong { color: #aaa; font-variant-numeric: tabular-nums; }
@@ -108,6 +110,7 @@
       flex: 1;
       position: relative;
       overflow: hidden;
+      min-width: 0;
     }
     #map-container { border-left: 1px solid #2e2e2e; }
     #chart, #map { width: 100%; height: 100%; display: block; }
@@ -120,7 +123,7 @@
     }
     .panel-sub {
       position: absolute; top: 26px; left: 12px;
-      font-size: 11px; color: #5f5f5f;
+      font-size: 11px; color: #6f6f6f;
       pointer-events: none; max-width: 60%;
     }
 
@@ -141,33 +144,80 @@
     }
     #tooltip strong { font-size: 13px; }
     #tooltip .num { font-variant-numeric: tabular-nums; }
-    #tooltip .routes { color: #8f8f8f; font-size: 11px; }
+    #tooltip .routes { color: #9a9a9a; font-size: 11px; }
 
-    /* ── Loading overlay ── */
+    /* ── Loading / error overlay ── */
     #loading {
       position: absolute;
       inset: 0;
       display: flex;
       align-items: center;
       justify-content: center;
+      padding: 24px;
       font-size: 15px;
       color: #666;
       background: #141414;
       z-index: 5;
     }
+    #loading code {
+      background: #222; padding: 1px 5px; border-radius: 3px;
+      font-size: 12px; color: #bbb;
+    }
 
     hr { border: none; border-top: 1px solid #2e2e2e; }
+
+    /* ── Credit ──
+       At full width body is a row flex at 100vh, so a footer cannot be a flex
+       child without becoming a third column -- it is pinned instead. The narrow
+       layout below is a column, where it can simply sit at the end. */
+    #credit {
+      position: fixed; right: 0; top: 0; z-index: 50;
+      padding: 4px 10px;
+      font: 11px/1.35 system-ui, sans-serif;
+      color: #8a8a8a; background: rgba(20,20,20,0.88);
+      border-bottom-left-radius: 4px;
+      pointer-events: none;
+      max-width: 46%;
+    }
+    #credit a { color: #b9b9b9; pointer-events: auto; }
+    #credit a:hover { color: #e8e8e8; }
+
+    /* ── Narrow layout ──
+       Two side-by-side force layouts do not survive a phone: below this width the
+       panels were ~135px each and drew nothing readable. Stack instead. */
+    @media (max-width: 900px) {
+      body { flex-direction: column; height: auto; min-height: 100vh; }
+      #controls {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid #2e2e2e;
+        overflow-y: visible;
+      }
+      #stats { margin-top: 12px; }
+      #chart-container, #map-container {
+        flex: none;
+        width: 100%;
+        height: 70vh;
+        min-height: 380px;
+      }
+      #map-container { border-left: none; border-top: 1px solid #2e2e2e; }
+      #credit {
+        position: static; max-width: none; order: 99;
+        background: none; padding: 10px 14px 14px;
+        border-top: 1px solid #2e2e2e;
+      }
+    }
   </style>
 </head>
 <body>
 
 <div id="controls">
-  <h1>Where the Subway Goes<br>Trip flows between station complexes, 2025</h1>
+  <h1 id="app-title"></h1>
 
-  <div class="control-group">
-    <label>Time of day</label>
+  <div class="control-group" id="period-control">
+    <label id="period-label"></label>
     <div class="slider-row">
-      <button id="play" type="button">▶</button>
+      <button id="play" type="button" aria-label="Play through periods">▶</button>
       <div class="radio-group" id="period-group" style="flex:1"></div>
     </div>
   </div>
@@ -175,19 +225,19 @@
   <hr>
 
   <div class="control-group">
-    <label>Station</label>
-    <input type="text" id="search" placeholder="Search station complexes…" autocomplete="off" list="station-list">
-    <datalist id="station-list"></datalist>
+    <label id="node-picker-label"></label>
+    <input type="text" id="search" autocomplete="off" list="node-list">
+    <datalist id="node-list"></datalist>
     <div id="selected"></div>
   </div>
 
   <hr>
 
   <div class="control-group">
-    <label>Edge weight</label>
+    <label id="metric-label"></label>
     <div class="radio-group">
-      <label><input type="radio" name="metric" value="share" checked> Share of the station's riders</label>
-      <label><input type="radio" name="metric" value="riders"> Estimated riders</label>
+      <label><input type="radio" name="metric" value="share" checked> <span id="metric-share-label"></span></label>
+      <label><input type="radio" name="metric" value="count"> <span id="metric-count-label"></span></label>
     </div>
     <div class="hint" id="metric-hint"></div>
   </div>
@@ -195,12 +245,12 @@
   <hr>
 
   <div class="control-group">
-    <label>Destinations shown</label>
+    <label id="topn-label"></label>
     <div class="slider-row">
       <input type="range" id="topn-slider" min="5" max="50" step="1" value="25">
       <span class="slider-val" id="topn-val">25</span>
     </div>
-    <div class="hint">The network draws only this many destinations. The map always keeps all 424 complexes.</div>
+    <div class="hint" id="topn-hint"></div>
   </div>
 
   <hr>
@@ -208,62 +258,42 @@
   <div class="control-group">
     <label>
       <input type="checkbox" id="second-order" checked style="accent-color:#4e79a7">
-      Link destinations to each other
+      <span id="second-order-label"></span>
     </label>
     <div class="hint">Adds edges among the destinations themselves, so the graph shows clusters rather than a bare star.</div>
   </div>
 
   <hr>
 
-  <div class="control-group">
-    <label>Trunk line</label>
+  <div class="control-group" id="group-control">
+    <label id="group-label"></label>
     <div id="legend"></div>
   </div>
 
   <div id="stats">
-    <div>Network edges: <strong id="stat-edges">—</strong></div>
-    <div>Riders covered: <strong id="stat-coverage">—</strong></div>
-    <div>Trips this period: <strong id="stat-trips">—</strong></div>
+    <div><span id="stat-edges-label"></span>: <strong id="stat-edges">—</strong></div>
+    <div><span id="stat-coverage-label"></span>: <strong id="stat-coverage">—</strong></div>
+    <div><span id="stat-total-label"></span>: <strong id="stat-total">—</strong></div>
   </div>
 </div>
 
 <div id="chart-container">
-  <div id="loading">Loading subway data…</div>
-  <div class="panel-title">Network</div>
+  <div id="loading">Loading…</div>
+  <div class="panel-title" id="network-panel-title"></div>
   <div class="panel-sub" id="network-sub"></div>
   <svg id="chart"></svg>
 </div>
 
 <div id="map-container">
-  <div class="panel-title">Map</div>
+  <div class="panel-title" id="map-panel-title"></div>
   <div class="panel-sub" id="map-sub"></div>
   <svg id="map"></svg>
 </div>
 
 <div id="tooltip"></div>
-
-<style>
-  /* body is a row flex at 100vh, so a footer cannot be a flex child here
-     without becoming a third column -- it is pinned instead. */
-  .page-credit {
-    position: fixed; right: 0; top: 0; z-index: 50;
-    padding: 4px 10px;
-    font: 11px/1.35 system-ui, sans-serif;
-    color: #8a8a8a; background: rgba(20,20,20,0.88);
-    border-bottom-left-radius: 4px;
-    pointer-events: none;
-  }
-  .page-credit a { color: #b9b9b9; pointer-events: auto; }
-  .page-credit a:hover { color: #e8e8e8; }
-</style>
-<footer class="page-credit">
-  Data:
-  <a href="https://data.ny.gov/d/y2qv-fytt" rel="noopener" target="_blank">MTA Subway Origin-Destination Ridership Estimate, 2025</a>.
-  Source code and method notes:
-  <a href="https://github.com/ssitari/MTASubwayNetwork" rel="noopener" target="_blank">ssitari/MTASubwayNetwork</a>.
-</footer>
+<footer id="credit"></footer>
 
 <script src="https://d3js.org/d3.v7.min.js"></script>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>
