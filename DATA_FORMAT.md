@@ -101,7 +101,14 @@ inner keys are period `key`s.
 }
 ```
 
-Each entry is `[destinationIndex, value]`.
+Each entry is `[destinationIndex, value]`, or `[destinationIndex, value, expected]`.
+
+**`expected` is optional.** It is what some model predicts the value would be. The MTA build
+uses a gravity model, described in the README. When every entry carries a positive `expected`,
+the viewer offers a third edge weight, *vs. expected*, which shows `value / expected`. It is all
+or nothing: if any entry lacks it, the option is simply not shown, rather than some edges being
+painted and others silently not. How you model "expected" is up to you. Fit it over all pairs,
+not just the stored ones, or it will only ever describe the busiest pairs.
 
 Three invariants the viewer depends on:
 

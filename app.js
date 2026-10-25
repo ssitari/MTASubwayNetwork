@@ -9,7 +9,7 @@ import * as CFG from './config.js';
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
   period: 0,                          // index into data.periods
-  metric: CFG.DEFAULT_METRIC,         // 'share' | 'count'
+  metric: CFG.DEFAULT_METRIC,         // 'share' | 'count' | 'expected'
   topN:   CFG.DEFAULT_TOP_N,
   secondOrder: CFG.DEFAULT_SECOND_ORDER,
 };
@@ -18,6 +18,7 @@ let selectedIndex = null;   // index into nodes
 let data      = null;
 let nodes     = [];
 let topNMax   = 50;         // from data.meta.top_n; how deep the stored lists go
+let hasExpected = false;    // ego entries carry a third, expected value
 let simNodes  = [];         // nodes currently in the network (subset of nodes)
 let simLinks  = [];
 let playTimer = null;
@@ -41,6 +42,11 @@ const dotLayer     = mapG.append('g').attr('class', 'dots');
 
 // Sequential ramp for "share of the selected node's flow arriving here".
 const shareScale = d3.scaleSequential(ramp);
+// Classed diverging scale for "flow vs. expected".
+const ratioScale = d3.scaleThreshold().domain(CFG.RATIO_BREAKS).range(CFG.RATIO_COLORS);
+// Under vs. expected the selected dot is dark in a white ring, not white: the
+// "about as expected" class is near-white and the two were indistinguishable.
+const SELECTED_FILL_DIVERGING = '#141414';
 
 const tooltip = d3.select('#tooltip');
 
@@ -95,6 +101,21 @@ function preflight(doc) {
   return problems;
 }
 
+// True when every stored edge carries a positive expected value as its third element.
+// All or nothing: a partly modelled file would paint some edges and silently not others.
+function detectExpected(doc) {
+  let any = false;
+  for (const k in doc.ego) {
+    for (const p in doc.ego[k]) {
+      for (const e of doc.ego[k][p]) {
+        if (!(e[2] > 0)) return false;
+        any = true;
+      }
+    }
+  }
+  return any;
+}
+
 function fail(message, detail, seeSpec) {
   const el = document.getElementById('loading');
   el.style.display = 'flex';
@@ -129,6 +150,10 @@ Promise.all([
 
   topNMax = net.meta.top_n;
   state.topN = Math.min(state.topN, topNMax);
+
+  // The expected value is optional in the format; without it the metric is not offered.
+  hasExpected = detectExpected(net);
+  if (!hasExpected && state.metric === 'expected') state.metric = 'share';
 
   applyStaticText();
   buildLegend();
@@ -177,6 +202,8 @@ function applyStaticText() {
   set('map-panel-title', CFG.MAP_PANEL_TITLE);
   set('metric-share-label', CFG.SHARE_METRIC_LABEL);
   set('metric-count-label', CFG.COUNT_METRIC_LABEL);
+  set('metric-expected-label', CFG.EXPECTED_METRIC_LABEL);
+  if (!hasExpected) document.getElementById('metric-expected-row').style.display = 'none';
   set('stat-edges-label', CFG.STAT_EDGES_LABEL);
   set('stat-coverage-label', CFG.STAT_COVERAGE_LABEL);
   set('stat-total-label', CFG.STAT_TOTAL_LABEL);
@@ -232,7 +259,16 @@ function shareOf(originIndex, value) {
   return tot > 0 ? value / tot : 0;
 }
 
-function weightOf(l) { return state.metric === 'share' ? l.share : l.value; }
+const vsExpected = () => state.metric === 'expected';
+
+// Under vs. expected an edge's weight is its distance from expected in either
+// direction, |log ratio|, so 2× over and 2× under draw equally heavy.
+function weightOf(l) {
+  if (vsExpected()) return Math.abs(Math.log(l.ratio));
+  return state.metric === 'share' ? l.share : l.value;
+}
+
+const fmtRatio = v => (v >= 10 ? v.toFixed(1) : v.toFixed(2)) + '×';
 
 // Largest single origin-destination flow anywhere in the current period, used as the map's
 // colour domain under the raw-count metric. Cached: it is a scan of every stored edge.
@@ -263,20 +299,21 @@ function buildNetwork() {
 
   const links = [];
   const seen = new Set();
-  const addLink = (a, b, value, primary) => {
+  const addLink = (a, b, value, expected, primary) => {
     const key = a + '-' + b;
     if (seen.has(key)) return;
     seen.add(key);
-    links.push({ s: a, t: b, value, share: shareOf(a, value), primary });
+    links.push({ s: a, t: b, value, share: shareOf(a, value),
+                 ratio: expected > 0 ? value / expected : 1, primary });
   };
 
-  top.forEach(([j, value]) => addLink(selectedIndex, j, value, true));
+  top.forEach(([j, value, expected]) => addLink(selectedIndex, j, value, expected, true));
 
   if (state.secondOrder) {
     for (const a of members) {
       if (a === selectedIndex) continue;
-      for (const [b, value] of egoEdges(a)) {
-        if (b !== selectedIndex && members.has(b)) addLink(a, b, value, false);
+      for (const [b, value, expected] of egoEdges(a)) {
+        if (b !== selectedIndex && members.has(b)) addLink(a, b, value, expected, false);
       }
     }
   }
@@ -290,24 +327,27 @@ function draw() {
   const { w, h } = dims();
 
   // Keep positions across redraws so changing period or top-N animates rather than resetting.
-  const prev = new Map(simNodes.map(d => [d.index, d]));
+  // `node` is the index into `nodes`. It must not be called `index`: d3.forceSimulation
+  // overwrites `index` on every node with its position in the simulation's array, which
+  // once relabelled every network as complexes 0, 1, 2… whatever was selected.
+  const prev = new Map(simNodes.map(d => [d.node, d]));
   simNodes = built.nodes.map(i => prev.get(i) || {
-    index: i,
+    node: i,
     x: w / 2 + (Math.random() - 0.5) * 300,
     y: h / 2 + (Math.random() - 0.5) * 300,
   });
-  const byIndex = new Map(simNodes.map(d => [d.index, d]));
+  const byIndex = new Map(simNodes.map(d => [d.node, d]));
   simLinks = built.links.map(l => ({ ...l, source: byIndex.get(l.s), target: byIndex.get(l.t) }));
 
   const maxWeight = d3.max(simLinks, weightOf) || 1;
-  const maxNode   = d3.max(simNodes, d => bothTotal(d.index)) || 1;
+  const maxNode   = d3.max(simNodes, d => bothTotal(d.node)) || 1;
   const rScale = d3.scaleSqrt().domain([0, maxNode]).range(CFG.NODE_RADIUS_RANGE);
   const wScale = d3.scalePow().exponent(0.5).domain([0, maxWeight])
     .range(CFG.EDGE_WIDTH_RANGE).clamp(true);
 
   if (!simulation) {
     simulation = d3.forceSimulation(simNodes)
-      .force('link', d3.forceLink([]).id(d => d.index).distance(CFG.LINK_DISTANCE_PRIMARY))
+      .force('link', d3.forceLink([]).id(d => d.node).distance(CFG.LINK_DISTANCE_PRIMARY))
       .force('charge', d3.forceManyBody().strength(CFG.CHARGE_STRENGTH))
       .force('center', d3.forceCenter(w / 2, h / 2))
       .force('collision', d3.forceCollide(10))
@@ -322,24 +362,24 @@ function draw() {
   const linkSel = linkLayer.selectAll('line').data(simLinks, l => l.s + '-' + l.t);
   linkSel.exit().remove();
   linkSel.enter().append('line')
-    .attr('stroke', '#8a8a8a')
     .merge(linkSel)
+    .attr('stroke', l => !vsExpected() ? '#8a8a8a' : l.ratio >= 1 ? CFG.EDGE_OVER : CFG.EDGE_UNDER)
     .attr('stroke-width', l => wScale(weightOf(l)))
     .attr('stroke-opacity', l => l.primary ? 0.75 : 0.16);
 
   // ── Nodes ──
-  const nodeSel = nodeLayer.selectAll('g.node').data(simNodes, d => d.index);
+  const nodeSel = nodeLayer.selectAll('g.node').data(simNodes, d => d.node);
   nodeSel.exit().remove();
   const nodeEnter = nodeSel.enter().append('g')
     .attr('class', 'node')
     .attr('cursor', 'pointer')
     .call(drag())
-    .on('mouseover', (event, d) => showTooltip(event, d.index))
+    .on('mouseover', (event, d) => showTooltip(event, d.node))
     .on('mousemove', moveTooltip)
     .on('mouseout', hideTooltip)
     .on('click', (event, d) => {
       event.stopPropagation();
-      select(d.index === selectedIndex ? null : d.index);
+      select(d.node === selectedIndex ? null : d.node);
     });
 
   nodeEnter.append('circle').attr('stroke', '#fff').attr('stroke-width', 1.1);
@@ -357,16 +397,23 @@ function draw() {
     .style('font-family', 'system-ui, sans-serif');
 
   const nodeAll = nodeEnter.merge(nodeSel);
-  nodeAll.select('circle').attr('r', d => rScale(bothTotal(d.index)));
+  nodeAll.select('circle').attr('r', d => rScale(bothTotal(d.node)));
   nodeAll.select('text')
-    .attr('dy', d => rScale(bothTotal(d.index)) + 3)
-    .text(d => label(d.index));
+    .attr('dy', d => rScale(bothTotal(d.node)) + 3)
+    .text(d => label(d.node));
 
-  simulation.force('collision', d3.forceCollide().radius(d => rScale(bothTotal(d.index)) + 3));
+  simulation.force('collision', d3.forceCollide().radius(d => rScale(bothTotal(d.node)) + 3));
+  // Under vs. expected only over-connected pairs pull, as in the Citi Bike tool: a pair
+  // riding less than expected should not draw two nodes together. The floor keeps an
+  // under-connected destination tethered rather than drifting off on the charge alone.
+  const posMax = d3.max(simLinks, l => Math.max(0, Math.log(l.ratio))) || 1;
+  const pull = l => vsExpected()
+    ? 0.05 + 0.95 * Math.max(0, Math.log(l.ratio)) / posMax
+    : Math.min(1, weightOf(l) / (maxWeight || 1));
   simulation.force('link')
     .links(simLinks)
     .distance(l => l.primary ? CFG.LINK_DISTANCE_PRIMARY : CFG.LINK_DISTANCE_SECOND)
-    .strength(l => Math.min(1, weightOf(l) / (maxWeight || 1)) * (l.primary ? 1 : 0.35));
+    .strength(l => pull(l) * (l.primary ? 1 : 0.35));
   simulation.alpha(0.7).restart();
 
   paint();
@@ -389,8 +436,9 @@ function paint() {
   // ego list, not the pruned top-N, so the map shows more than the network does.
   const values = new Map();
   if (sel !== null) {
-    for (const [j, v] of egoEdges(sel)) {
-      values.set(j, state.metric === 'share' ? shareOf(sel, v) : v);
+    for (const [j, v, expected] of egoEdges(sel)) {
+      values.set(j, vsExpected() ? v / expected
+                  : state.metric === 'share' ? shareOf(sel, v) : v);
     }
   }
 
@@ -404,15 +452,17 @@ function paint() {
     ? (d3.max(Array.from(values.values())) || 1)
     : globalMaxValue();
   shareScale.domain([0, maxVal]);
-  const colorOf = i => (values.has(i) ? shareScale(values.get(i)) : CFG.LAND_COLOR);
+  const scale = vsExpected() ? ratioScale : shareScale;
+  const colorOf = i => (values.has(i) ? scale(values.get(i)) : CFG.LAND_COLOR);
+  const selFill = vsExpected() ? SELECTED_FILL_DIVERGING : CFG.SELECTION_COLOR;
 
-  const inNetwork = new Set(simNodes.map(d => d.index));
+  const inNetwork = new Set(simNodes.map(d => d.node));
 
   // Network nodes keep their group colour; the selected one is ringed.
   nodeLayer.selectAll('g.node circle')
-    .attr('fill', d => nodes[d.index].group || CFG.DEFAULT_GROUP_COLOR)
-    .attr('stroke', d => d.index === sel ? CFG.SELECTION_COLOR : 'rgba(0,0,0,0.45)')
-    .attr('stroke-width', d => d.index === sel ? 3 : 0.9);
+    .attr('fill', d => nodes[d.node].group || CFG.DEFAULT_GROUP_COLOR)
+    .attr('stroke', d => d.node === sel ? CFG.SELECTION_COLOR : 'rgba(0,0,0,0.45)')
+    .attr('stroke-width', d => d.node === sel ? 3 : 0.9);
 
   const maxDot = d3.max(nodes, (n, i) => bothTotal(i)) || 1;
   const dotR = d3.scaleSqrt().domain([0, maxDot]).range(CFG.MAP_DOT_RADIUS_RANGE);
@@ -420,7 +470,7 @@ function paint() {
   dotLayer.selectAll('circle')
     // With nothing selected there is no flow to shade by, so the map falls back to group
     // colour -- which draws the system as a recognisable map rather than a grey field.
-    .attr('fill', n => n.i === sel ? CFG.SELECTION_COLOR
+    .attr('fill', n => n.i === sel ? selFill
       : (sel === null ? (n.group || CFG.DEFAULT_GROUP_COLOR) : colorOf(n.i)))
     .attr('r', n => dotR(bothTotal(n.i)) * (n.i === sel ? 1.5 : 1))
     .attr('stroke', n => n.i === sel ? CFG.SELECTION_COLOR
@@ -443,7 +493,8 @@ function updateSubtitles() {
   document.getElementById('network-sub').textContent =
     'Top ' + state.topN + ' destinations from ' + name + ' · ' + p;
   document.getElementById('map-sub').textContent =
-    'All ' + nodes.length + ' ' + CFG.NODE_LABEL_PLURAL + ', shaded by flow from ' + name;
+    'All ' + nodes.length + ' ' + CFG.NODE_LABEL_PLURAL + ', shaded by flow from ' + name +
+    (vsExpected() ? ' vs. expected' : '');
 }
 
 // ── Tick / drag ──────────────────────────────────────────────────────────────
@@ -484,11 +535,13 @@ function showTooltip(event, i) {
     const thisName = label(i);
     // Ego lists are truncated, so an absent pair is "not in the stored list", not zero.
     const missing = 'below top ' + topNMax;
+    // Under vs. expected the bracket gives the prediction and the ratio, not the share.
+    const detail = (from, e) => vsExpected()
+      ? fmt1(e[1]) + ' vs. ' + fmt1(e[2]) + ' expected (' + fmtRatio(e[1] / e[2]) + ')'
+      : fmt1(e[1]) + ' (' + pct(shareOf(from, e[1])) + ')';
     html += '<hr style="border:none;border-top:1px solid #444;margin:6px 0"><span class="num">';
-    html += selName + ' → ' + thisName + ': ' +
-      (edge ? fmt1(edge[1]) + ' (' + pct(shareOf(selectedIndex, edge[1])) + ')' : missing);
-    html += '<br>' + thisName + ' → ' + selName + ': ' +
-      (back ? fmt1(back[1]) + ' (' + pct(shareOf(i, back[1])) + ')' : missing);
+    html += selName + ' → ' + thisName + ': ' + (edge ? detail(selectedIndex, edge) : missing);
+    html += '<br>' + thisName + ' → ' + selName + ': ' + (back ? detail(i, back) : missing);
     html += '</span>';
   }
   tooltip.style('display', 'block').html(html);
@@ -631,8 +684,8 @@ function initControls() {
 }
 
 function updateMetricHint() {
-  document.getElementById('metric-hint').textContent =
-    state.metric === 'share' ? CFG.SHARE_METRIC_HINT : CFG.COUNT_METRIC_HINT;
+  document.getElementById('metric-hint').textContent = vsExpected() ? CFG.EXPECTED_METRIC_HINT
+    : state.metric === 'share' ? CFG.SHARE_METRIC_HINT : CFG.COUNT_METRIC_HINT;
 }
 
 // ── Resize ───────────────────────────────────────────────────────────────────
@@ -750,6 +803,31 @@ function buildMapLegend() {
   lg.append('text').attr('class', 'legend-max')
     .attr('y', 19).attr('text-anchor', 'end').attr('fill', '#888').attr('font-size', '9px')
     .style('font-family', 'system-ui, sans-serif');
+
+  // Vs. expected: one swatch per class, labelled with the class's range, in the
+  // space the gradient bar uses under the other metrics.
+  const b = CFG.RATIO_BREAKS;
+  const stepLabels = ['< ' + b[0] + '×']
+    .concat(b.slice(1).map((v, k) => b[k] + '–' + v + '×'), ['> ' + b[b.length - 1] + '×']);
+  const steps = lg.append('g').attr('class', 'legend-steps').selectAll('g')
+    .data(CFG.RATIO_COLORS.map((color, k) => ({ color, label: stepLabels[k] })))
+    .enter().append('g');
+  steps.append('rect').attr('y', 0).attr('height', 8).attr('fill', d => d.color);
+  steps.append('text').text(d => d.label)
+    .attr('y', 19).attr('text-anchor', 'middle').attr('fill', '#888').attr('font-size', '9px')
+    .style('font-family', 'system-ui, sans-serif');
+
+  // The network's edge colours only mean something under vs. expected, so the key
+  // lives in the network panel and is shown only then.
+  const ek = svg.append('g').attr('class', 'edge-key').attr('pointer-events', 'none')
+    .style('display', 'none');
+  [[CFG.EDGE_OVER, 'More ' + CFG.VALUE_LABEL + ' than expected'],
+   [CFG.EDGE_UNDER, 'Fewer ' + CFG.VALUE_LABEL + ' than expected']].forEach(([color, text], k) => {
+    ek.append('line').attr('x1', 0).attr('x2', 18).attr('y1', k * 15).attr('y2', k * 15)
+      .attr('stroke', color).attr('stroke-width', 3);
+    ek.append('text').text(text).attr('x', 24).attr('y', k * 15).attr('dy', '0.35em')
+      .attr('fill', '#999').attr('font-size', '10px').style('font-family', 'system-ui, sans-serif');
+  });
   positionMapLegend();
 }
 
@@ -759,15 +837,30 @@ function positionMapLegend() {
   mapSvg.select('.map-legend').attr('transform', 'translate(12,' + (r.height - 30) + ')');
   mapSvg.select('.legend-bar').attr('width', lw);
   mapSvg.select('.legend-max').attr('x', lw);
+
+  const sw = Math.min(46, (r.width - 24) / CFG.RATIO_COLORS.length);
+  const steps = mapSvg.selectAll('.legend-steps > g');
+  steps.select('rect').attr('x', (d, k) => k * sw).attr('width', sw - 1);
+  steps.select('text').attr('x', (d, k) => k * sw + sw / 2);
+
+  svg.select('.edge-key').attr('transform', 'translate(12,' + (dims().h - 34) + ')');
 }
 
 function updateMapLegend(min, max) {
   const fmtVal = v => state.metric === 'share' ? pct(v) : fmt(Math.round(v));
-  mapSvg.select('.legend-title').text(selectedIndex === null
-    ? ''
-    : (state.metric === 'share'
-        ? 'Share of ' + label(selectedIndex) + '’s ' + CFG.VALUE_LABEL
-        : CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' from ' + label(selectedIndex)));
+  const name = selectedIndex === null ? '' : label(selectedIndex);
+  mapSvg.select('.legend-title').text(selectedIndex === null ? ''
+    : vsExpected() ? CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' from ' + name +
+                     ' vs. expected'
+    : state.metric === 'share' ? 'Share of ' + name + '’s ' + CFG.VALUE_LABEL
+    : CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' from ' + name);
+
+  // A diverging, classed legend under vs. expected; the gradient bar otherwise.
+  const classed = vsExpected() && selectedIndex !== null;
+  mapSvg.selectAll('.legend-bar, .legend-min, .legend-max')
+    .style('display', classed ? 'none' : null);
+  mapSvg.select('.legend-steps').style('display', classed ? null : 'none');
+  svg.select('.edge-key').style('display', classed ? null : 'none');
   mapSvg.select('.legend-min').text(fmtVal(min));
   mapSvg.select('.legend-max').text(fmtVal(max));
 }

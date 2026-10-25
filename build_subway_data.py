@@ -36,6 +36,10 @@ Weekdays only (Mon-Fri), averaged over all months of 2025, binned into four peri
 Edges are the top N destinations per origin per period (see TOP_N).  The map keeps
 every complex; only the network is pruned.  This asymmetry is deliberate.
 
+Each stored edge also carries the riders a gravity model expects for that pair, which
+the viewer's "vs. expected" metric divides by.  The model is fitted per period over
+every ordered pair, not just the stored ones -- see fit_expected().
+
 Output contract
 ---------------
 This script is the MTA-specific half of the tool.  Everything it knows about the
@@ -48,6 +52,7 @@ different builder that emits the same shape.  DATA_FORMAT.md is the spec.
 
 import json, os, re, time
 from collections import Counter, defaultdict
+import numpy as np
 import requests
 
 URL     = "https://data.ny.gov/resource/y2qv-fytt.json"
@@ -90,6 +95,13 @@ SHUTTLE = ("#808183", "Shuttle")
 # nothing to model destinations from. Including them would draw two ghost stations carrying
 # essentially no riders; they are dropped, loudly, rather than silently averaged to near zero.
 EXCLUDE = {"501": "St George (SIR)", "502": "Tompkinsville (SIR)"}
+
+# Gravity model behind "vs. expected": the straight-line distance curve bends at these
+# knots.  The first segment (under 1 km) is free to slope upward -- and does, because
+# riders walk short hops rather than take a train -- so the curve is learned, not
+# assumed to fall with distance.  MIN_KM keeps two complexes on one corner finite.
+KNOTS_KM = [1, 2, 4, 8, 16]
+MIN_KM   = 0.1
 
 SESSION = requests.Session()
 
@@ -243,6 +255,121 @@ def fetch_slice(month, pkey, hours):
         offset += PAGE
 
 
+def fit_expected(R, lat, lon):
+    """Expected riders for every ordered pair in one period's flow matrix R.
+
+    Poisson regression (pseudo-likelihood, since the riders are fractional estimates):
+
+        log E[r_ij] = o_i + d_j + f(km_ij)
+
+    o_i and d_j are one term per complex for boarding and for arriving.  They absorb
+    how busy each complex is in each direction, so every complex's expected boardings
+    and arrivals equal its actual ones and the ratio speaks only to *who* it trades
+    with.  Separate origin and destination terms matter here in a way they did not
+    for Citi Bike: a job centre's AM inflow is many times its outflow.  f is piecewise
+    linear in log(km), bending at KNOTS_KM.
+
+    Solved by Newton-Raphson on all ~850 parameters at once (d_0 is pinned at zero,
+    since adding a constant to every o and subtracting it from every d changes
+    nothing), starting from the busyness-only fit.  Alternating between the station
+    terms and the distance terms instead was tried and crawls: the two are strongly
+    correlated, so each half-step undoes much of the other.
+
+    Returns (expected matrix, diagnostics dict).
+    """
+    n = len(R)
+    off = ~np.eye(n, dtype=bool)
+    y = R[off]
+    la, lo = np.radians(lat), np.radians(lon)
+    dx = (lo[None, :] - lo[:, None]) * 6371.0 * np.cos((la[None, :] + la[:, None]) / 2)
+    dy = (la[None, :] - la[:, None]) * 6371.0
+    km = np.maximum(np.hypot(dx, dy), MIN_KM)[off]
+    L = np.log(km)
+    X = np.column_stack([L] + [np.maximum(L - np.log(k), 0.0) for k in KNOTS_KM])
+    oi = np.nonzero(off)[0]
+    dj = np.nonzero(off)[1]
+    out_t = np.bincount(oi, y, n)
+    in_t = np.bincount(dj, y, n)
+    if (out_t <= 0).any() or (in_t <= 0).any():
+        raise SystemExit("ERROR: a complex has no boardings or no arrivals; cannot fit")
+
+    def margins(beta, a, b):
+        base = X @ beta
+        for _ in range(500):
+            a = a + np.log(out_t / np.bincount(oi, np.exp(a[oi] + b[dj] + base), n))
+            mu = np.exp(a[oi] + b[dj] + base)
+            b = b + np.log(in_t / np.bincount(dj, mu, n))
+            mu = np.exp(a[oi] + b[dj] + base)
+            if np.abs(np.bincount(oi, mu, n) / out_t - 1).max() < 1e-10:
+                break
+        return a, b, mu
+
+    def deviance(mu):
+        pos = y > 0
+        return 2 * (np.sum(y[pos] * np.log(y[pos] / mu[pos])) - np.sum(y - mu))
+
+    K = X.shape[1]
+    a, b, mu0 = margins(np.zeros(K), np.zeros(n), np.zeros(n))   # busyness only
+    a, b = a + b[0], b - b[0]                                    # same fit, d_0 = 0
+    theta = np.concatenate([a, b[1:], np.zeros(K)])
+
+    def unpack(t):
+        return t[:n], np.concatenate([[0.0], t[n:2 * n - 1]]), t[2 * n - 1:]
+
+    def loglik(t):
+        a, b, beta = unpack(t)
+        eta = a[oi] + b[dj] + X @ beta
+        return float(np.sum(y * eta - np.exp(eta)))
+
+    ll = loglik(theta)
+    for it in range(50):
+        a, b, beta = unpack(theta)
+        mu = np.exp(a[oi] + b[dj] + X @ beta)
+        res = y - mu
+        g = np.concatenate([np.bincount(oi, res, n), np.bincount(dj, res, n)[1:], X.T @ res])
+        M = np.zeros((n, n))
+        M[off] = mu
+        MX = X * mu[:, None]
+        H = np.zeros((2 * n - 1 + K, 2 * n - 1 + K))
+        H[:n, :n] = np.diag(M.sum(1))
+        H[n:2 * n - 1, n:2 * n - 1] = np.diag(M.sum(0)[1:])
+        H[:n, n:2 * n - 1] = M[:, 1:]
+        H[:n, 2 * n - 1:] = np.column_stack([np.bincount(oi, MX[:, k], n) for k in range(K)])
+        H[n:2 * n - 1, 2 * n - 1:] = np.column_stack(
+            [np.bincount(dj, MX[:, k], n)[1:] for k in range(K)])
+        H[2 * n - 1:, 2 * n - 1:] = X.T @ MX
+        H = np.triu(H) + np.triu(H, 1).T
+        step = np.linalg.solve(H, g)
+        s = 1.0
+        while s > 1e-6:
+            llc = loglik(theta + s * step)
+            if llc >= ll:
+                break
+            s /= 2
+        else:
+            break                 # no improving step: converged as far as floats allow
+        theta, ll = theta + s * step, llc
+        if np.abs(step).max() * s < 1e-8:
+            break
+    else:
+        raise SystemExit("ERROR: gravity model did not converge")
+    a, b, beta = unpack(theta)
+    mu = np.exp(a[oi] + b[dj] + X @ beta)
+
+    flat = np.full(len(y), y.mean())
+    E = np.zeros((n, n))
+    E[off] = mu
+    slopes = np.cumsum(beta)
+    return E, {
+        # vs. a flat model, the same baseline the Citi Bike and CDTA tools report
+        "deviance_explained": round(1 - deviance(mu) / deviance(flat), 4),
+        # how much of what busyness alone leaves unexplained, distance accounts for
+        "beyond_busyness": round(1 - deviance(mu) / deviance(mu0), 4),
+        "slopes": [round(float(s), 3) for s in slopes],
+        "iterations": it + 1,
+    }
+
+
 def main():
     os.makedirs(CACHE, exist_ok=True)
     stations = fetch_stations()
@@ -272,6 +399,23 @@ def main():
             print("  %s month %2d: %d pairs cumulative %d"
                   % (pkey, month, len(rows), len(flows[pkey])))
 
+    # Expected riders per pair, fitted over the full matrix -- the stored top N alone
+    # would be a biased sample of exactly the busiest pairs.
+    lat = np.array([float(s["lat"]) for s in stations])
+    lon = np.array([float(s["lon"]) for s in stations])
+    expected, fits = {}, {}
+    for pk in pkeys:
+        R = np.zeros((len(stations), len(stations)))
+        for i, dests in flows[pk].items():
+            for j, r in dests.items():
+                R[i, j] = r / divisor
+        np.fill_diagonal(R, 0.0)
+        expected[pk], fits[pk] = fit_expected(R, lat, lon)
+        print("  %s gravity fit: deviance explained %.3f (%.3f beyond busyness), "
+              "%d iterations, slopes %s" % (pk, fits[pk]["deviance_explained"],
+              fits[pk]["beyond_busyness"], fits[pk]["iterations"], fits[pk]["slopes"]))
+    sig = lambda x: float("%.3g" % x)
+
     out_tot = defaultdict(lambda: defaultdict(float))   # sid -> per -> riders
     in_tot = defaultdict(lambda: defaultdict(float))
     ego = {}                                            # nodeIdx -> per -> [[destIdx, riders]]
@@ -290,7 +434,8 @@ def main():
             tot = sum(r for _, r in lst)
             if tot > 0:
                 coverage[pk].append(sum(r for _, r in top) / tot)
-            e[pk] = [[j, round(r, 2)] for j, r in top]
+            # [destination, riders, expected riders]
+            e[pk] = [[j, round(r, 2), sig(expected[pk][i, j])] for j, r in top]
         ego[str(i)] = e
 
     print("excluded %d complexes with negligible coverage: %s"
@@ -340,6 +485,11 @@ def main():
             "top_n": TOP_N,
             "median_top_n_coverage": cov,
             "group_order": group_order,
+            "expected_model": {
+                "form": "log E[riders_ij] = o_i + d_j + f(log km_ij), Poisson, per period",
+                "knots_km": KNOTS_KM,
+                "fits": fits,
+            },
             "note": ("estimated_average_ridership is modeled, not counted: origins come from "
                      "fare transactions, destinations are inferred by MTA. Values are "
                      "fractional and should be read as estimates."),

@@ -80,6 +80,13 @@ export const COUNT_METRIC_LABEL = 'Estimated riders';
 export const COUNT_METRIC_HINT  =
   'Raw estimates on one system-wide ramp, so selections are comparable and quiet stations stay pale.';
 
+// The third metric, offered only when the data file carries an expected value per
+// edge (see DATA_FORMAT.md). It divides each flow by a model's prediction.
+export const EXPECTED_METRIC_LABEL = 'Vs. expected';
+export const EXPECTED_METRIC_HINT  =
+  'Riders divided by what a gravity model predicts from how busy both complexes are and how ' +
+  'far apart they are. Orange edges and red dots: more riders than expected; blue: fewer.';
+
 // Sidebar control headings and the two panel captions.
 export const PERIOD_LABEL      = 'Time of day';   // set to '' if your data has one period
 export const NODE_PICKER_LABEL = 'Station';
@@ -104,7 +111,7 @@ export const STAT_TOTAL_LABEL    = 'Trips this period';
 
 export const DEFAULT_TOP_N        = 25;
 export const MIN_TOP_N            = 5;
-export const DEFAULT_METRIC       = 'share';   // 'share' | 'count'
+export const DEFAULT_METRIC       = 'share';   // 'share' | 'count' | 'expected'
 export const DEFAULT_SECOND_ORDER = true;
 export const PLAY_INTERVAL_MS     = 1600;      // period auto-advance
 
@@ -127,6 +134,14 @@ export const BASEMAP_FILL       = '#1e1e1e';
 export const BASEMAP_LINE       = '#2f2f2f';
 export const DEFAULT_GROUP_COLOR = '#999';    // nodes whose group has no colour
 export const SELECTION_COLOR    = '#fff';
+
+// Vs. expected is diverging about 1×, so it is classed rather than ramped: Brewer
+// RdBu, five classes, reversed so more-than-expected is warm, with breaks
+// symmetric in log space (0.8 and 1.25 are reciprocals, as are 0.5 and 2).
+export const RATIO_BREAKS = [0.5, 0.8, 1.25, 2];
+export const RATIO_COLORS = ['#0571b0', '#92c5de', '#f7f7f7', '#f4a582', '#ca0020'];
+export const EDGE_OVER    = '#f0a04b';   // network edges carrying more than expected
+export const EDGE_UNDER   = '#5b8fc9';   // … and fewer
 
 // ============================================================
 //  LAYOUT TUNING
