@@ -855,10 +855,12 @@ function updateMapLegend(min, max) {
     : state.metric === 'share' ? 'Share of ' + name + '’s ' + CFG.VALUE_LABEL
     : CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' from ' + name);
 
-  // A diverging, classed legend under vs. expected; the gradient bar otherwise.
+  // A diverging, classed legend under vs. expected; the gradient bar otherwise. With
+  // nothing selected the dots wear their line colours, which the sidebar legends, so
+  // a flow ramp here would describe nothing on the map.
   const classed = vsExpected() && selectedIndex !== null;
   mapSvg.selectAll('.legend-bar, .legend-min, .legend-max')
-    .style('display', classed ? 'none' : null);
+    .style('display', classed || selectedIndex === null ? 'none' : null);
   mapSvg.select('.legend-steps').style('display', classed ? null : 'none');
   svg.select('.edge-key').style('display', classed ? null : 'none');
   mapSvg.select('.legend-min').text(fmtVal(min));

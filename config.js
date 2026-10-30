@@ -37,7 +37,7 @@ export const BASEMAP_FILE = 'data/boroughs.geojson';
 // ============================================================
 
 export const APP_TITLE    = 'NYC Subway Trip Network';
-export const APP_SUBTITLE = 'Trip flows between station complexes, 2025';
+export const APP_SUBTITLE = 'Trip flows between stations, 2025';
 
 export const CREDIT_HTML = `
   Data:
@@ -56,8 +56,8 @@ export const CREDIT_HTML = `
 //  it in lower case unless it is a proper noun.
 // ============================================================
 
-export const NODE_LABEL        = 'station complex';
-export const NODE_LABEL_PLURAL = 'station complexes';
+export const NODE_LABEL        = 'station';
+export const NODE_LABEL_PLURAL = 'stations';
 
 // What one unit of flow is called. VALUE_LABEL appears in running text;
 // OUT_LABEL and IN_LABEL name the two directions in tooltips and the readout.
@@ -84,7 +84,7 @@ export const COUNT_METRIC_HINT  =
 // edge (see DATA_FORMAT.md). It divides each flow by a model's prediction.
 export const EXPECTED_METRIC_LABEL = 'Vs. expected';
 export const EXPECTED_METRIC_HINT  =
-  'Riders divided by what a gravity model predicts from how busy both complexes are and how ' +
+  'Riders divided by what a gravity model predicts from how busy both stations are and how ' +
   'far apart they are. Orange edges and red dots: more riders than expected; blue: fewer.';
 
 // Sidebar control headings and the two panel captions.
@@ -118,7 +118,7 @@ export const PLAY_INTERVAL_MS     = 1600;      // period auto-advance
 // Which node the page opens on. 'busiest' picks the largest node by total
 // flow; 'none' opens with an empty network panel; or give a node id as a
 // string to always open on the same one.
-export const OPEN_ON = 'busiest';
+export const OPEN_ON = 'none';
 
 // ============================================================
 //  COLOUR
