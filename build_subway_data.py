@@ -36,9 +36,12 @@ Weekdays only (Mon-Fri), averaged over all months of 2025, binned into four peri
 Edges are the top N destinations per origin per period (see TOP_N).  The map keeps
 every complex; only the network is pruned.  This asymmetry is deliberate.
 
-Each stored edge also carries the riders a gravity model expects for that pair, which
-the viewer's "vs. expected" metric divides by.  The model is fitted per period over
-every ordered pair, not just the stored ones -- see fit_expected().
+Each stored edge also carries the riders a gravity model expects for that pair.  The
+model is fitted per period over every ordered pair, not just the stored ones -- see
+fit_expected().  Two more lists per origin and period rank destinations by riders /
+expected instead of by riders: `over` (furthest above expected) and `under` (furthest
+below), so a quiet pair with an unusually strong or weak tie is not crowded out by
+busy ones.  See RATIO_FLOOR for which pairs qualify.
 
 Output contract
 ---------------
@@ -102,6 +105,14 @@ EXCLUDE = {"501": "St George (SIR)", "502": "Tompkinsville (SIR)"}
 # assumed to fall with distance.  MIN_KM keeps two complexes on one corner finite.
 KNOTS_KM = [1, 2, 4, 8, 16]
 MIN_KM   = 0.1
+
+# A pair is ranked in the over/under lists only if the model expects at least this many
+# riders for it on a typical weekday in the period (2 is about 500 trips a year).  Below
+# that the ratio is dominated by the model's own blind spots -- a one-block out-of-system
+# transfer posts 140x on 8 riders -- rather than by anything riders do.  Kept low on
+# purpose: a floor of 10 left most quiet stations with nothing to rank, and surfacing
+# their unusual ties is the point of ranking by ratio at all.
+RATIO_FLOOR = 2
 
 SESSION = requests.Session()
 
@@ -403,13 +414,14 @@ def main():
     # would be a biased sample of exactly the busiest pairs.
     lat = np.array([float(s["lat"]) for s in stations])
     lon = np.array([float(s["lon"]) for s in stations])
-    expected, fits = {}, {}
+    riders, expected, fits = {}, {}, {}
     for pk in pkeys:
         R = np.zeros((len(stations), len(stations)))
         for i, dests in flows[pk].items():
             for j, r in dests.items():
                 R[i, j] = r / divisor
         np.fill_diagonal(R, 0.0)
+        riders[pk] = R
         expected[pk], fits[pk] = fit_expected(R, lat, lon)
         print("  %s gravity fit: deviance explained %.3f (%.3f beyond busyness), "
               "%d iterations, slopes %s" % (pk, fits[pk]["deviance_explained"],
@@ -419,11 +431,27 @@ def main():
     out_tot = defaultdict(lambda: defaultdict(float))   # sid -> per -> riders
     in_tot = defaultdict(lambda: defaultdict(float))
     ego = {}                                            # nodeIdx -> per -> [[destIdx, riders]]
+    over, under = {}, {}                                # same shape, ranked by riders / expected
     coverage = defaultdict(list)
 
     for i, s in enumerate(stations):
-        e = {}
+        e, ov, un = {}, {}, {}
         for pk in pkeys:
+            # Ranked lists: qualifying pairs only, each side of 1x kept to its own list so
+            # "most over" never pads itself out with pairs that are actually under.  Ties
+            # (mostly zero-rider pairs in `under`) go to the larger expectation: 0 against
+            # 70 says more than 0 against 2.
+            Ri, Ei = riders[pk][i], expected[pk][i]
+            ok = Ei >= RATIO_FLOOR
+            ok[i] = False
+            ratio = np.where(ok, Ri / np.where(ok, Ei, 1.0), 0.0)
+            hi = np.flatnonzero(ok & (Ri > Ei))
+            hi = hi[np.lexsort((-Ei[hi], -ratio[hi]))][:TOP_N]
+            lo = np.flatnonzero(ok & (Ri < Ei))
+            lo = lo[np.lexsort((-Ei[lo], ratio[lo]))][:TOP_N]
+            ov[pk] = [[int(j), sig(Ri[j]), sig(Ei[j])] for j in hi]
+            un[pk] = [[int(j), sig(Ri[j]), sig(Ei[j])] for j in lo]
+
             dests = flows[pk].get(i, {})
             lst = sorted(((j, r / divisor) for j, r in dests.items() if r > 0),
                          key=lambda t: -t[1])
@@ -437,6 +465,16 @@ def main():
             # [destination, riders, expected riders]
             e[pk] = [[j, round(r, 2), sig(expected[pk][i, j])] for j, r in top]
         ego[str(i)] = e
+        over[str(i)] = ov
+        under[str(i)] = un
+
+    for pk in pkeys:
+        n_ov = [len(over[str(i)][pk]) for i in range(len(stations))]
+        n_un = [len(under[str(i)][pk]) for i in range(len(stations))]
+        print("  %s ranked lists: over median %d (%d stations short of %d), "
+              "under median %d (%d short)" % (pk, sorted(n_ov)[len(n_ov) // 2],
+              sum(c < TOP_N for c in n_ov), TOP_N, sorted(n_un)[len(n_un) // 2],
+              sum(c < TOP_N for c in n_un)))
 
     print("excluded %d complexes with negligible coverage: %s"
           % (len(EXCLUDE), ", ".join(sorted(EXCLUDE.values()))))
@@ -490,6 +528,8 @@ def main():
                 "knots_km": KNOTS_KM,
                 "fits": fits,
             },
+            # minimum expected riders for a pair to appear in `over` / `under`
+            "ratio_floor": RATIO_FLOOR,
             "note": ("estimated_average_ridership is modeled, not counted: origins come from "
                      "fare transactions, destinations are inferred by MTA. Values are "
                      "fractional and should be read as estimates."),
@@ -501,6 +541,8 @@ def main():
         "periods": [{"key": k, "label": l, "note": "%dh" % len(h)} for k, l, h in PERIODS],
         "nodes": stations,
         "ego": ego,
+        "over": over,
+        "under": under,
     }
     os.makedirs("data", exist_ok=True)
     json.dump(doc, open(OUT, "w"), separators=(",", ":"))

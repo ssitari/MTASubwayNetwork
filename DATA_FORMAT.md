@@ -18,7 +18,9 @@ will do.
   "meta":    { … },        // required — see below
   "periods": [ … ],        // required — at least one
   "nodes":   [ … ],        // required — at least one
-  "ego":     { … }         // required
+  "ego":     { … },        // required
+  "over":    { … },        // optional — see "Ranked lists" below
+  "under":   { … }         // optional — with `over`, or not at all
 }
 ```
 
@@ -26,7 +28,8 @@ will do.
 
 | Key | Required | What it is |
 |---|---|---|
-| `top_n` | **yes** | How many destinations each ego list stores. Drives the top-N slider's maximum and the "below top N" wording in tooltips. |
+| `top_n` | **yes** | How many destinations each ego list stores. Drives the top-N slider's maximum and the "not in top N" wording in tooltips. |
+| `ratio_floor` | no | The minimum expected value a pair needed to enter the ranked lists. If present, the page states it under the two ranked metrics. |
 | `group_order` | no | `[[label, color], …]` — the colour legend, in the order you want it read. Without it the legend falls back to first-seen order, which is whatever sequence your nodes happen to be in. |
 | `note` | no | A caveat about the numbers. Shown on hover over the sidebar statistics. |
 | `generated` | no | Build date, appended to the page credit. |
@@ -102,13 +105,9 @@ inner keys are period `key`s.
 ```
 
 Each entry is `[destinationIndex, value]`, or `[destinationIndex, value, expected]`.
-
-**`expected` is optional.** It is what some model predicts the value would be. The MTA build
-uses a gravity model, described in the README. When every entry carries a positive `expected`,
-the viewer offers a third edge weight, *vs. expected*, which shows `value / expected`. It is all
-or nothing: if any entry lacks it, the option is simply not shown, rather than some edges being
-painted and others silently not. How you model "expected" is up to you. Fit it over all pairs,
-not just the stored ones, or it will only ever describe the busiest pairs.
+In `ego` the third element is optional; when present, the tooltip can show the
+pair's ratio to expected under the ranked metrics even if the pair is not in a
+ranked list.
 
 Three invariants the viewer depends on:
 
@@ -120,6 +119,39 @@ Three invariants the viewer depends on:
 
 A node with no outbound flow may be omitted, or given an empty array.
 
+### Ranked lists: `over` and `under`
+
+Optional. When both are present, the viewer offers two more ways to rank
+destinations — *most over expected* and *most under expected* — which pick each
+node's destinations by `value / expected` instead of by `value`. Without them, only
+the share ranking is offered.
+
+They have exactly the shape of `ego`, but every entry must carry its expected value:
+
+```jsonc
+"over": {
+  "0": { "am": [[17, 148.0, 14.0], [32, 245.0, 28.9], …], … },
+  …
+}
+```
+
+- **`over`** holds only pairs with `value > expected`, sorted by `value / expected`
+  **descending**; **`under`** only pairs with `value < expected`, sorted
+  **ascending**. Keep each list to its own side of 1×, even if that leaves it short:
+  a "most over" list padded with pairs that are actually under would contradict
+  its own name.
+- **At most `meta.top_n` entries** each; fewer is fine, and the page says so.
+- **Every entry needs a positive `expected`.** It is all or nothing: if any entry
+  lacks one, neither option is shown, rather than some nodes ranking and others
+  silently not.
+
+What "expected" means is up to you; the MTA build uses a gravity model, described
+in the README. Two things matter whatever model you use. Fit it over **all** pairs,
+not just the stored ones, or it will only ever describe the busiest pairs. And set
+a **floor** on the expected value a pair needs before it is ranked. Otherwise the
+lists fill up with pairs the model expects almost nothing for, where any flow at
+all posts an enormous ratio. Record it as `meta.ratio_floor`.
+
 ---
 
 ## Why the two panels carry different resolutions
@@ -129,7 +161,7 @@ asymmetry is the point of the tool, and it is why `ego` is truncated while `out`
 and `in` are not — detail is cheap on a map and expensive in a force layout.
 
 The consequence to be honest about: **an absent pair means "not in the stored
-list", not "zero".** The tooltip says "below top N" rather than "0" for exactly
+list", not "zero".** The tooltip says "not in top N" rather than "0" for exactly
 this reason. If truncation loses a lot of your data, say so — the MTA build
 measures per-period coverage and the README publishes it.
 
@@ -140,4 +172,4 @@ measures per-period coverage and the README publishes it.
 `app.js` validates the document at load and, if it does not fit, replaces the
 loading message with a list of what is wrong rather than failing silently. The
 checks are in `preflight()` — required keys, one `out`/`in` entry per period, and
-in-range ego indices.
+in-range destination indices in `ego` and, when present, `over` and `under`.

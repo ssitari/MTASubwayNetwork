@@ -31,12 +31,22 @@ A pruned graph is not a lossy version of the map — it is a different question 
 
 ## The metric
 
-Edge weight defaults to **the share of the origin complex's riders** that a flow represents, the
-same choice made in the state-migration version of this tool. Raw rider counts mostly restate which
-stations are busy: every list would be topped by the same handful of Midtown transfer points, and a
-quiet outer-borough station would have no legible structure at all. The share metric asks a
-different question — of everyone who boards *here*, where do they actually go? — and it makes small
-stations as readable as large ones. A toggle switches back to raw estimates for comparison.
+*Rank destinations by* decides both which destinations a station's network shows and how its edges
+are weighted. There are three choices:
+
+- **Share of the station's riders** (the default) — the station's busiest destinations, each
+  weighted by the share of the origin complex's riders it carries, the same choice made in the
+  state-migration version of this tool. Raw rider counts mostly restate which stations are busy:
+  every list would be topped by the same handful of Midtown transfer points, and a quiet
+  outer-borough station would have no legible structure at all. The share metric asks a different
+  question — of everyone who boards *here*, where do they actually go? — and it makes small
+  stations as readable as large ones.
+- **Most over expected** and **Most under expected** — the destinations furthest above or below
+  what a gravity model predicts, ranked by that ratio rather than by size. See
+  [Vs. expected](#vs-expected).
+
+An earlier version also offered raw rider estimates. It was dropped: ranked by size, it picked the
+same destinations as share and differed only in the map's colour scale.
 
 One finding from the source data is worth stating up front, because it is the opposite of what the
 project assumed going in: **subway flows are not hub-and-spoke.** Across the whole system in the
@@ -53,9 +63,15 @@ and the map does not.
 ## Vs. expected
 
 The share metric says where a station's riders go, but much of the answer is still "somewhere busy,
-not too far away." **Vs. expected** divides each flow by what a gravity model predicts for it, so
-what stands out is what busyness and distance cannot explain. It is the same idea as the
+not too far away." The two vs. expected rankings divide each flow by what a gravity model predicts
+for it, so what stands out is what busyness and distance cannot explain. It is the same idea as the
 [Citi Bike station network](https://github.com/ssitari/CitiBikeStationNetwork), adapted for trains.
+
+They also *choose* the destinations by that ratio. Choosing by riders and only colouring by the
+ratio, as an earlier version did, buried exactly the ties this view exists to find: a quiet pair
+with an unusually strong link never made a station's busiest 50. Ranked by ratio, **17%** of the
+destinations in a station's AM "most over" top 25 are ones its busiest-50 list never contained.
+At Flushing-Main St it is 12 of 25.
 
 ### The model
 
@@ -90,18 +106,39 @@ model, the same baseline the Citi Bike tools report (88.7% at station level). Th
 measured against busyness alone.
 
 The model is fitted in `build_subway_data.py` (`fit_expected`: numpy, Newton–Raphson on all ~850
-parameters, about 15 seconds for the four periods), and each stored destination carries its
-expected value.
+parameters, about 15 seconds for the four periods).
+
+### How the rankings are built
+
+For each complex and period, the build keeps two lists beside its busiest 50:
+
+- **over** — up to 50 destinations with more riders than expected, highest ratio first;
+- **under** — up to 50 with fewer, lowest ratio first. Ties, mostly pairs with no riders at all, go
+  to the larger expectation: none against 70 expected says more than none against 2.
+
+A pair is ranked only if the model expects **at least 2 riders** for it on a typical weekday in the
+period — about 500 trips a year. Below that the ratio mostly measures the model's own blind spots.
+Livonia Av → Junius St, a one-block out-of-system transfer, has 8 riders against 0.06 expected:
+143×. The floor is kept low on purpose. At 10, most quiet stations had almost nothing left to rank,
+and surfacing their unusual ties is the point.
+
+Each list keeps only its own side of 1×, so it can run short. In the AM the median complex has 48
+qualifying destinations above expected; 223 of the 424 have fewer than 50, and in the evening 309
+do. The page says "All 22 destinations … that qualify" rather than padding the list with pairs from
+the other side.
 
 ### What it shows
 
 Straight-line distance does not know where the tracks run, so the strongest results are mostly
-one-seat rides. In the AM peak, 34 St-Penn Station (1,2,3) → Wall St (2,3) runs at **9.9×**
-(1,479 riders against 149 expected), 72 St → Chambers St on the 1/2/3 at 9.2×, and 1 Av → Bedford
-Av on the L at 9.3×. The commute reverses in the PM: Wall St → Penn Station at 9.1×.
+one-seat rides. In the AM peak, Wall St (2,3)'s riders go to 50 St on the 1 at **10.6×** (148
+riders against 14 expected) and to 34 St-Penn Station (1,2,3) at 8.5×. From Bedford Av on the L, 3
+Av runs at 9.9× and 1 Av at 6.1×. From Flushing-Main St, the top of the list is the rest of the 7:
+Queensboro Plaza at 4.1×, 69 St at 3.9×.
 
-The busy pairs furthest *under* expected mostly need a transfer between nearby lines: Penn Station
-(1,2,3) → 14 St-Union Sq at 0.12× (79 riders against 648 expected), and 2 Av → Fulton St at 0.09×.
+The *under* lists are mostly trips that need a transfer, or that run the length of the system the
+wrong way. From Wall St, Grand St (B,D) has 0.5 riders against 20 expected (0.03×), and stations on
+the G come close behind. From Flushing, the bottom of the list is the far end of the A line — Far Rockaway, Howard Beach
+— and the Bronx.
 
 That is the tradeoff with this model: much of what it flags amounts to "these two stations share a
 line." A model that also controlled for shared routes or scheduled travel time would pull those
@@ -110,13 +147,13 @@ considered and deferred. The line structure is worth seeing first.
 
 ### Caveats
 
-- **Thin pairs produce wild ratios.** A quiet complex's 50th destination can be a handful of
-  riders, and a handful against an expectation near zero posts 100×. Livonia Av → Junius St, a
-  one-block out-of-system transfer, shows 8 riders against 0.06 expected. The map's top class is
-  simply "> 2×"; the tooltip gives the actual counts.
-- **The stored destinations lean over 1×.** They are each complex's *busiest* destinations, so 72%
-  of stored AM edges (79% in the PM) are above expected. Compare colours with each other, not
-  against an even split.
+- **The ratio is not the size.** A ranked list deliberately mixes big flows with small ones. The
+  tooltip gives the riders and the expected count behind every ratio, and the node sizes still show
+  how busy each station is overall.
+- **Zero-rider pairs.** About 3% of AM *under* entries (597 of 20,449) have no riders at all. About
+  four in ten of those are within 1.5 km of each other, like 86 St on the Q and 86 St on the 4/5/6,
+  where people walk. But 60 of them (one in ten) share a line as well, which may reflect how MTA
+  infers destinations rather than how people ride.
 - **Straight-line distance is not track distance**, as above. Rivers and the shape of the network
   are invisible to the model.
 - **The destinations are modeled by MTA** (see [Data](#data)), and the model inherits that
@@ -124,16 +161,20 @@ considered and deferred. The line structure is worth seeing first.
 
 ## Reading the panels
 
-- **Network (left)** — the selected complex plus its top destinations, sized by total traffic and
-  colored by trunk line. With *Link destinations to each other* on, edges among the destinations
-  themselves are drawn too, which is what turns a bare star into a graph with visible clusters.
-  Under vs. expected, orange edges carry more riders than expected and blue fewer; thicker means
-  further from expected, and only over-expected pairs pull their nodes together.
-- **Map (right)** — all 424 complexes, shaded by flow from the selection on a sequential scale, or
-  under vs. expected in five classes of ColorBrewer RdBu with breaks at 0.5, 0.8, 1.25 and 2×.
-  Complexes outside the selection's top 50 stay unshaded. The map is drawn from the complete
-  *stored* destination list — all 50 — while the network draws only as many as the slider asks
-  for, so the map always shows at least as much as the network does.
+- **Network (left)** — the selected complex plus its top destinations under the current ranking,
+  sized by total traffic and colored by trunk line. With *Link destinations to each other* on,
+  edges among the destinations themselves are drawn too, from each destination's own list for the
+  same ranking — under *most over*, a link between two destinations means they too ride more than
+  expected. This is what turns a bare star into a graph with visible clusters. Under the two
+  vs. expected rankings, edges are orange (over) or blue (under) and thicker the further from
+  expected; under *most over*, the further above expected a pair is, the harder it pulls its nodes
+  together.
+- **Map (right)** — all 424 complexes. Under share, the selection's stored destinations are
+  shaded on a sequential scale. Under the vs. expected rankings they fall into five quantile
+  classes of the ratios in view — ColorBrewer OrRd above expected, Blues below — darkest furthest
+  from expected, with each class labelled by its range. Complexes not in the stored list stay
+  unshaded. The map is drawn from the complete stored list — up to 50 — while the network draws
+  only as many as the slider asks for, so the map always shows at least as much as the network does.
 - **Time of day** — four periods; the play button cycles them. Watching the AM and PM peaks in
   sequence is the point of the time dimension: the same station's flows largely reverse.
 - **Destinations shown** — prunes the network without touching the map.
@@ -225,7 +266,7 @@ resumes where it stopped.
 
 | File | What it is |
 |---|---|
-| `data/subway_network.json` | 424 complexes with coordinates, routes, trunk color, and per-period boardings/arrivals; plus each complex's top-50 destinations per period, each with its riders and the gravity model's expected riders. Shape is specified in [DATA_FORMAT.md](DATA_FORMAT.md) |
+| `data/subway_network.json` | 424 complexes with coordinates, routes, trunk color, and per-period boardings/arrivals; plus three lists of up to 50 destinations per complex per period — busiest, furthest over expected, furthest under — each entry with its riders and the gravity model's expected riders. Shape is specified in [DATA_FORMAT.md](DATA_FORMAT.md) |
 | `data/boroughs.geojson` | Five boroughs, WGS 84, simplified for use as a backdrop |
 
 ---

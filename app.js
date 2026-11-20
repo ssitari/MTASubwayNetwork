@@ -9,7 +9,7 @@ import * as CFG from './config.js';
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
   period: 0,                          // index into data.periods
-  metric: CFG.DEFAULT_METRIC,         // 'share' | 'count' | 'expected'
+  metric: CFG.DEFAULT_METRIC,         // 'share' | 'over' | 'under'
   topN:   CFG.DEFAULT_TOP_N,
   secondOrder: CFG.DEFAULT_SECOND_ORDER,
 };
@@ -18,7 +18,7 @@ let selectedIndex = null;   // index into nodes
 let data      = null;
 let nodes     = [];
 let topNMax   = 50;         // from data.meta.top_n; how deep the stored lists go
-let hasExpected = false;    // ego entries carry a third, expected value
+let hasRanked = false;      // the data carries `over` / `under` lists ranked vs. expected
 let simNodes  = [];         // nodes currently in the network (subset of nodes)
 let simLinks  = [];
 let playTimer = null;
@@ -42,11 +42,9 @@ const dotLayer     = mapG.append('g').attr('class', 'dots');
 
 // Sequential ramp for "share of the selected node's flow arriving here".
 const shareScale = d3.scaleSequential(ramp);
-// Classed diverging scale for "flow vs. expected".
-const ratioScale = d3.scaleThreshold().domain(CFG.RATIO_BREAKS).range(CFG.RATIO_COLORS);
-// Under vs. expected the selected dot is dark in a white ring, not white: the
-// "about as expected" class is near-white and the two were indistinguishable.
-const SELECTED_FILL_DIVERGING = '#141414';
+// Under the two ranked metrics the selected dot is dark in a white ring, not white:
+// each scheme's palest class is near-white and the two were indistinguishable.
+const SELECTED_FILL_CLASSED = '#141414';
 
 const tooltip = d3.select('#tooltip');
 
@@ -90,10 +88,13 @@ function preflight(doc) {
   // ego indices address the nodes array positionally; an off-by-one here would
   // silently draw the wrong edges rather than fail, so check it up front.
   const n = doc.nodes.length;
-  const first = doc.ego[Object.keys(doc.ego)[0]];
-  if (first && Array.isArray(first[keys[0]])) {
-    const bad = first[keys[0]].find(e => !Array.isArray(e) || e[0] < 0 || e[0] >= n);
-    if (bad) problems.push('`ego` contains a destination index outside 0…' + (n - 1));
+  for (const name of ['ego', 'over', 'under']) {
+    if (!doc[name]) continue;
+    const first = doc[name][Object.keys(doc[name])[0]];
+    if (first && Array.isArray(first[keys[0]])) {
+      const bad = first[keys[0]].find(e => !Array.isArray(e) || e[0] < 0 || e[0] >= n);
+      if (bad) problems.push('`' + name + '` contains a destination index outside 0…' + (n - 1));
+    }
   }
   if (!Number.isFinite(doc.meta && doc.meta.top_n)) {
     problems.push('`meta.top_n` is missing (how many destinations each ego list stores)');
@@ -101,15 +102,19 @@ function preflight(doc) {
   return problems;
 }
 
-// True when every stored edge carries a positive expected value as its third element.
-// All or nothing: a partly modelled file would paint some edges and silently not others.
-function detectExpected(doc) {
+// True when the file ships both ranked lists and every entry in them carries a
+// positive expected value. All or nothing: a partly modelled file would rank some
+// nodes and silently not others.
+function detectRanked(doc) {
   let any = false;
-  for (const k in doc.ego) {
-    for (const p in doc.ego[k]) {
-      for (const e of doc.ego[k][p]) {
-        if (!(e[2] > 0)) return false;
-        any = true;
+  for (const name of ['over', 'under']) {
+    if (!doc[name] || typeof doc[name] !== 'object') return false;
+    for (const k in doc[name]) {
+      for (const p in doc[name][k]) {
+        for (const e of doc[name][k][p]) {
+          if (!(e[2] > 0)) return false;
+          any = true;
+        }
       }
     }
   }
@@ -151,9 +156,9 @@ Promise.all([
   topNMax = net.meta.top_n;
   state.topN = Math.min(state.topN, topNMax);
 
-  // The expected value is optional in the format; without it the metric is not offered.
-  hasExpected = detectExpected(net);
-  if (!hasExpected && state.metric === 'expected') state.metric = 'share';
+  // The ranked lists are optional in the format; without them only share is offered.
+  hasRanked = detectRanked(net);
+  if (!hasRanked) state.metric = 'share';
 
   applyStaticText();
   buildLegend();
@@ -201,9 +206,12 @@ function applyStaticText() {
   set('network-panel-title', CFG.NETWORK_PANEL_TITLE);
   set('map-panel-title', CFG.MAP_PANEL_TITLE);
   set('metric-share-label', CFG.SHARE_METRIC_LABEL);
-  set('metric-count-label', CFG.COUNT_METRIC_LABEL);
-  set('metric-expected-label', CFG.EXPECTED_METRIC_LABEL);
-  if (!hasExpected) document.getElementById('metric-expected-row').style.display = 'none';
+  set('metric-over-label', CFG.OVER_METRIC_LABEL);
+  set('metric-under-label', CFG.UNDER_METRIC_LABEL);
+  if (!hasRanked) {
+    document.getElementById('metric-over-row').style.display = 'none';
+    document.getElementById('metric-under-row').style.display = 'none';
+  }
   set('stat-edges-label', CFG.STAT_EDGES_LABEL);
   set('stat-coverage-label', CFG.STAT_COVERAGE_LABEL);
   set('stat-total-label', CFG.STAT_TOTAL_LABEL);
@@ -239,11 +247,19 @@ function applyStaticText() {
 }
 
 // ── Accessors ────────────────────────────────────────────────────────────────
-function egoEdges(i) {
-  const e = data.ego[String(i)];
+// One stored list of node i for the current period: 'ego' (top by value), or the
+// ranked 'over' / 'under' lists.
+function listOf(i, which) {
+  const e = data[which] && data[which][String(i)];
   if (!e) return [];
   return e[data.periods[state.period].key] || [];
 }
+function egoEdges(i) { return listOf(i, 'ego'); }
+
+// The list the current metric picks destinations from. Share ranks by value; the two
+// ranked metrics by value / expected, so a quiet pair with an unusually strong or weak
+// tie is not crowded out by the busy ones.
+function rankedEdges(i) { return listOf(i, byRatio() ? state.metric : 'ego'); }
 
 function outTotal(i)  { return nodes[i].out[state.period]; }
 function inTotal(i)   { return nodes[i].in[state.period]; }
@@ -259,41 +275,30 @@ function shareOf(originIndex, value) {
   return tot > 0 ? value / tot : 0;
 }
 
-const vsExpected = () => state.metric === 'expected';
+const byRatio = () => state.metric === 'over' || state.metric === 'under';
 
-// Under vs. expected an edge's weight is its distance from expected in either
-// direction, |log ratio|, so 2× over and 2× under draw equally heavy.
+// log(ratio), clamped: the under list includes pairs with no riders at all, whose
+// log ratio would be -Infinity and take every width and force scale with it.
+const logRatio = r => Math.log(Math.min(100, Math.max(0.01, r)));
+
+// Under the ranked metrics an edge's weight is its distance from expected, |log ratio|,
+// so 2× over and 2× under draw equally heavy.
 function weightOf(l) {
-  if (vsExpected()) return Math.abs(Math.log(l.ratio));
-  return state.metric === 'share' ? l.share : l.value;
+  return byRatio() ? Math.abs(logRatio(l.ratio)) : l.share;
 }
 
 const fmtRatio = v => (v >= 10 ? v.toFixed(1) : v.toFixed(2)) + '×';
 
-// Largest single origin-destination flow anywhere in the current period, used as the map's
-// colour domain under the raw-count metric. Cached: it is a scan of every stored edge.
-const maxValueCache = new Map();
-function globalMaxValue() {
-  const key = state.period;
-  if (!maxValueCache.has(key)) {
-    let m = 0;
-    for (const k in data.ego) {
-      for (const [, v] of egoEdges(+k)) if (v > m) m = v;
-    }
-    maxValueCache.set(key, m || 1);
-  }
-  return maxValueCache.get(key);
-}
-
 // ── Network construction ─────────────────────────────────────────────────────
-// Nodes = the selected node plus its top-N destinations. Edges = the selected node to
-// each destination, plus (optionally) edges among the destinations themselves, pulled
-// from each destination's own stored list. The second-order edges are what turn a bare
-// star into a graph with readable clusters.
+// Nodes = the selected node plus its top-N destinations under the current metric. Edges =
+// the selected node to each destination, plus (optionally) edges among the destinations
+// themselves, pulled from each destination's own list for the same metric -- so under
+// "most over" a second-order edge means those two also ride more than expected. The
+// second-order edges are what turn a bare star into a graph with readable clusters.
 function buildNetwork() {
   if (selectedIndex === null) return { nodes: [], links: [] };
 
-  const top = egoEdges(selectedIndex).slice(0, state.topN);
+  const top = rankedEdges(selectedIndex).slice(0, state.topN);
   const members = new Set([selectedIndex]);
   top.forEach(([j]) => members.add(j));
 
@@ -312,7 +317,7 @@ function buildNetwork() {
   if (state.secondOrder) {
     for (const a of members) {
       if (a === selectedIndex) continue;
-      for (const [b, value, expected] of egoEdges(a)) {
+      for (const [b, value, expected] of rankedEdges(a)) {
         if (b !== selectedIndex && members.has(b)) addLink(a, b, value, expected, false);
       }
     }
@@ -363,7 +368,10 @@ function draw() {
   linkSel.exit().remove();
   linkSel.enter().append('line')
     .merge(linkSel)
-    .attr('stroke', l => !vsExpected() ? '#8a8a8a' : l.ratio >= 1 ? CFG.EDGE_OVER : CFG.EDGE_UNDER)
+    // Coloured by the metric, not by each edge's own ratio: every edge under "most over"
+    // comes from an over list, and a stored 0.999× from rounding should not flip to blue.
+    .attr('stroke', state.metric === 'over' ? CFG.EDGE_OVER
+      : state.metric === 'under' ? CFG.EDGE_UNDER : '#8a8a8a')
     .attr('stroke-width', l => wScale(weightOf(l)))
     .attr('stroke-opacity', l => l.primary ? 0.75 : 0.16);
 
@@ -403,12 +411,15 @@ function draw() {
     .text(d => label(d.node));
 
   simulation.force('collision', d3.forceCollide().radius(d => rScale(bothTotal(d.node)) + 3));
-  // Under vs. expected only over-connected pairs pull, as in the Citi Bike tool: a pair
-  // riding less than expected should not draw two nodes together. The floor keeps an
-  // under-connected destination tethered rather than drifting off on the charge alone.
-  const posMax = d3.max(simLinks, l => Math.max(0, Math.log(l.ratio))) || 1;
-  const pull = l => vsExpected()
-    ? 0.05 + 0.95 * Math.max(0, Math.log(l.ratio)) / posMax
+  // Under "most over" the further above expected, the harder a pair pulls, as in the
+  // Citi Bike tool. Under "most under" every edge is a shortfall, and a shortfall is no
+  // reason to draw two nodes together, so all pull alike and the layout is left to the
+  // second-order structure. The floor keeps a weak tie tethered rather than drifting off
+  // on the charge alone.
+  const posMax = d3.max(simLinks, l => Math.max(0, logRatio(l.ratio))) || 1;
+  const pull = l => state.metric === 'over'
+    ? 0.05 + 0.95 * Math.max(0, logRatio(l.ratio)) / posMax
+    : state.metric === 'under' ? 0.4
     : Math.min(1, weightOf(l) / (maxWeight || 1));
   simulation.force('link')
     .links(simLinks)
@@ -432,29 +443,23 @@ function paint() {
   const sel = selectedIndex;
 
   // Value painted on the map for every node: the share of the selected node's flow
-  // (or the raw value) arriving there in this period. Computed from the whole stored
-  // ego list, not the pruned top-N, so the map shows more than the network does.
+  // arriving there, or its ratio to expected. Computed from the whole stored list for
+  // the metric, not the pruned top-N, so the map shows more than the network does.
   const values = new Map();
   if (sel !== null) {
-    for (const [j, v, expected] of egoEdges(sel)) {
-      values.set(j, vsExpected() ? v / expected
-                  : state.metric === 'share' ? shareOf(sel, v) : v);
+    for (const [j, v, expected] of rankedEdges(sel)) {
+      values.set(j, byRatio() ? v / expected : shareOf(sel, v));
     }
   }
 
-  // Under 'share' the ramp is rescaled to the selection: share is a value divided by a
-  // constant (the origin's own total), so a per-selection domain is the only thing that
-  // distinguishes the two metrics at all -- normalized against its own max, a share ramp
-  // and a count ramp are the identical picture. Under 'count' the domain is instead global
-  // to the period, so a quiet node reads as genuinely pale next to a busy one and two
-  // selections can be compared.
-  const maxVal = state.metric === 'share'
-    ? (d3.max(Array.from(values.values())) || 1)
-    : globalMaxValue();
+  // Share: a ramp rescaled to the selection, so its own biggest destination is always
+  // the darkest. Ranked metrics: classed, see ratioClasses().
+  const maxVal = d3.max(Array.from(values.values())) || 1;
   shareScale.domain([0, maxVal]);
-  const scale = vsExpected() ? ratioScale : shareScale;
-  const colorOf = i => (values.has(i) ? scale(values.get(i)) : CFG.LAND_COLOR);
-  const selFill = vsExpected() ? SELECTED_FILL_DIVERGING : CFG.SELECTION_COLOR;
+  const classes = byRatio() ? ratioClasses(Array.from(values.values())) : null;
+  const colorOf = i => !values.has(i) ? CFG.LAND_COLOR
+    : classes ? classes.scale(values.get(i)) : shareScale(values.get(i));
+  const selFill = byRatio() ? SELECTED_FILL_CLASSED : CFG.SELECTION_COLOR;
 
   const inNetwork = new Set(simNodes.map(d => d.node));
 
@@ -478,8 +483,26 @@ function paint() {
     .attr('stroke-width', n => n.i === sel ? 2 : (inNetwork.has(n.i) ? 1.1 : 0.4))
     .attr('opacity', n => (sel === null || n.i === sel || values.has(n.i)) ? 1 : 0.25);
 
-  updateMapLegend(0, maxVal);
+  updateMapLegend(maxVal, classes);
   updateSubtitles();
+}
+
+// Ranked metrics: five quantile classes of the ratios in view, one hue per direction
+// (Brewer OrRd over, Blues under), darkest = furthest from expected. Fixed breaks around
+// 1× would not work here: every value in an over list is above 1×, and most would land
+// in a single top class. Rows run most extreme first and are labelled with the range of
+// values actually in each class.
+function ratioClasses(values) {
+  const range = state.metric === 'over' ? CFG.OVER_COLORS : [...CFG.UNDER_COLORS].reverse();
+  const scale = d3.scaleQuantile().domain(values).range(range);
+  const rows = range.map(color => {
+    const inClass = values.filter(v => scale(v) === color);
+    if (!inClass.length) return null;
+    const [lo, hi] = d3.extent(inClass).map(fmtRatio);
+    return { color, label: lo === hi ? lo : lo + ' – ' + hi };
+  }).filter(Boolean);
+  if (state.metric === 'over') rows.reverse();
+  return { scale, rows };
 }
 
 function updateSubtitles() {
@@ -490,11 +513,19 @@ function updateSubtitles() {
     return;
   }
   const name = label(selectedIndex);
-  document.getElementById('network-sub').textContent =
-    'Top ' + state.topN + ' destinations from ' + name + ' · ' + p;
-  document.getElementById('map-sub').textContent =
-    'All ' + nodes.length + ' ' + CFG.NODE_LABEL_PLURAL + ', shaded by flow from ' + name +
-    (vsExpected() ? ' vs. expected' : '');
+  // A ranked list can be shorter than the slider asks for: only so many pairs clear the
+  // floor on expected, and each list keeps only its own side of 1×. Say so.
+  const stored = rankedEdges(selectedIndex).length;
+  const side = state.metric === 'over' ? 'above' : 'below';
+  document.getElementById('network-sub').textContent = (!byRatio()
+    ? 'Top ' + Math.min(state.topN, stored) + ' destinations from ' + name
+    : stored <= state.topN
+      ? 'All ' + stored + ' destinations from ' + name + ' that qualify ' + side + ' expected'
+      : 'The ' + state.topN + ' destinations from ' + name + ' furthest ' + side + ' expected') +
+    ' · ' + p;
+  document.getElementById('map-sub').textContent = !byRatio()
+    ? 'All ' + nodes.length + ' ' + CFG.NODE_LABEL_PLURAL + ', shaded by flow from ' + name
+    : 'Shaded: the ' + stored + ' destinations from ' + name + ' furthest ' + side + ' expected';
 }
 
 // ── Tick / drag ──────────────────────────────────────────────────────────────
@@ -529,14 +560,18 @@ function showTooltip(event, i) {
     CFG.IN_LABEL + ': ' + fmt(inTotal(i)) + '</span>';
 
   if (selectedIndex !== null && selectedIndex !== i) {
-    const edge = egoEdges(selectedIndex).find(([j]) => j === i);
-    const back = egoEdges(i).find(([j]) => j === selectedIndex);
+    // A pair can be stored in any of the three lists; any one of them has its numbers.
+    const pair = (a, b) => ['ego', 'over', 'under']
+      .map(w => listOf(a, w).find(([j]) => j === b)).find(Boolean);
+    const edge = pair(selectedIndex, i);
+    const back = pair(i, selectedIndex);
     const selName = label(selectedIndex);
     const thisName = label(i);
-    // Ego lists are truncated, so an absent pair is "not in the stored list", not zero.
-    const missing = 'below top ' + topNMax;
-    // Under vs. expected the bracket gives the prediction and the ratio, not the share.
-    const detail = (from, e) => vsExpected()
+    // Lists are truncated, so an absent pair is "not in the stored list", not zero.
+    const missing = 'not in top ' + topNMax;
+    // Under the ranked metrics the bracket gives the prediction and the ratio, not the
+    // share -- when the entry carries one (expected is optional in `ego`).
+    const detail = (from, e) => byRatio() && e[2] > 0
       ? fmt1(e[1]) + ' vs. ' + fmt1(e[2]) + ' expected (' + fmtRatio(e[1] / e[2]) + ')'
       : fmt1(e[1]) + ' (' + pct(shareOf(from, e[1])) + ')';
     html += '<hr style="border:none;border-top:1px solid #444;margin:6px 0"><span class="num">';
@@ -559,7 +594,7 @@ function updateStats() {
 
   let cov = '—';
   if (selectedIndex !== null) {
-    const all = egoEdges(selectedIndex);
+    const all = rankedEdges(selectedIndex);
     const totShown = d3.sum(all.slice(0, state.topN), d => d[1]);
     const tot = outTotal(selectedIndex);
     if (tot > 0) cov = pct(totShown / tot);
@@ -684,8 +719,15 @@ function initControls() {
 }
 
 function updateMetricHint() {
-  document.getElementById('metric-hint').textContent = vsExpected() ? CFG.EXPECTED_METRIC_HINT
-    : state.metric === 'share' ? CFG.SHARE_METRIC_HINT : CFG.COUNT_METRIC_HINT;
+  // The floor on expected is a fact about the data file, so it is appended here rather
+  // than written into config text that could fall out of step with a rebuild.
+  const floor = data.meta.ratio_floor;
+  const floorNote = byRatio() && floor
+    ? ' Only pairs expected to carry at least ' + floor + ' ' + CFG.VALUE_LABEL + ' are ranked.'
+    : '';
+  document.getElementById('metric-hint').textContent =
+    (state.metric === 'over' ? CFG.OVER_METRIC_HINT
+      : state.metric === 'under' ? CFG.UNDER_METRIC_HINT : CFG.SHARE_METRIC_HINT) + floorNote;
 }
 
 // ── Resize ───────────────────────────────────────────────────────────────────
@@ -804,30 +846,45 @@ function buildMapLegend() {
     .attr('y', 19).attr('text-anchor', 'end').attr('fill', '#888').attr('font-size', '9px')
     .style('font-family', 'system-ui, sans-serif');
 
-  // Vs. expected: one swatch per class, labelled with the class's range, in the
-  // space the gradient bar uses under the other metrics.
-  const b = CFG.RATIO_BREAKS;
-  const stepLabels = ['< ' + b[0] + '×']
-    .concat(b.slice(1).map((v, k) => b[k] + '–' + v + '×'), ['> ' + b[b.length - 1] + '×']);
-  const steps = lg.append('g').attr('class', 'legend-steps').selectAll('g')
-    .data(CFG.RATIO_COLORS.map((color, k) => ({ color, label: stepLabels[k] })))
-    .enter().append('g');
-  steps.append('rect').attr('y', 0).attr('height', 8).attr('fill', d => d.color);
-  steps.append('text').text(d => d.label)
-    .attr('y', 19).attr('text-anchor', 'middle').attr('fill', '#888').attr('font-size', '9px')
-    .style('font-family', 'system-ui, sans-serif');
+  // Ranked metrics: a classed legend, one row per class, rebuilt on every repaint because
+  // its labels are the ranges of the values in view. Positioned from the bottom up.
+  mapSvg.append('g').attr('class', 'ratio-legend').attr('pointer-events', 'none')
+    .style('display', 'none');
 
-  // The network's edge colours only mean something under vs. expected, so the key
-  // lives in the network panel and is shown only then.
+  // The network's edge colours only mean something under the ranked metrics, so the key
+  // lives in the network panel and is shown only then, one row for the metric in use.
   const ek = svg.append('g').attr('class', 'edge-key').attr('pointer-events', 'none')
     .style('display', 'none');
-  [[CFG.EDGE_OVER, 'More ' + CFG.VALUE_LABEL + ' than expected'],
-   [CFG.EDGE_UNDER, 'Fewer ' + CFG.VALUE_LABEL + ' than expected']].forEach(([color, text], k) => {
-    ek.append('line').attr('x1', 0).attr('x2', 18).attr('y1', k * 15).attr('y2', k * 15)
-      .attr('stroke', color).attr('stroke-width', 3);
-    ek.append('text').text(text).attr('x', 24).attr('y', k * 15).attr('dy', '0.35em')
-      .attr('fill', '#999').attr('font-size', '10px').style('font-family', 'system-ui, sans-serif');
+  [['over', CFG.EDGE_OVER, 'More ' + CFG.VALUE_LABEL + ' than expected · thicker = further above'],
+   ['under', CFG.EDGE_UNDER, 'Fewer ' + CFG.VALUE_LABEL + ' than expected · thicker = further below']]
+    .forEach(([metric, color, text]) => {
+      const row = ek.append('g').attr('class', 'edge-key-' + metric);
+      row.append('line').attr('x1', 0).attr('x2', 18).attr('stroke', color).attr('stroke-width', 3);
+      row.append('text').text(text).attr('x', 24).attr('dy', '0.35em')
+        .attr('fill', '#999').attr('font-size', '10px').style('font-family', 'system-ui, sans-serif');
+    });
+  positionMapLegend();
+}
+
+const RATIO_ROW = 14;   // px per class row in the ranked-metric legend
+const RATIO_HEAD = 26;  // title + note above the rows
+
+function renderRatioLegend(title, rows) {
+  const lg = mapSvg.select('.ratio-legend');
+  lg.selectAll('*').remove();
+  const font = 'system-ui, sans-serif';
+  lg.append('text').text(title).attr('y', 0).attr('fill', '#bbb').attr('font-size', '10px')
+    .attr('font-weight', '600').style('font-family', font);
+  lg.append('text').text('Ranges adjust to current view').attr('y', 12).attr('fill', '#777')
+    .attr('font-size', '9px').style('font-family', font);
+  rows.forEach((r, k) => {
+    const y = RATIO_HEAD + k * RATIO_ROW;
+    lg.append('rect').attr('x', 0).attr('y', y - 8).attr('width', 14).attr('height', 9)
+      .attr('fill', r.color);
+    lg.append('text').text(r.label).attr('x', 20).attr('y', y).attr('fill', '#999')
+      .attr('font-size', '9px').style('font-family', font);
   });
+  lg.datum(rows.length);
   positionMapLegend();
 }
 
@@ -838,33 +895,33 @@ function positionMapLegend() {
   mapSvg.select('.legend-bar').attr('width', lw);
   mapSvg.select('.legend-max').attr('x', lw);
 
-  const sw = Math.min(46, (r.width - 24) / CFG.RATIO_COLORS.length);
-  const steps = mapSvg.selectAll('.legend-steps > g');
-  steps.select('rect').attr('x', (d, k) => k * sw).attr('width', sw - 1);
-  steps.select('text').attr('x', (d, k) => k * sw + sw / 2);
+  const rows = mapSvg.select('.ratio-legend').datum() || 0;
+  mapSvg.select('.ratio-legend').attr('transform',
+    'translate(12,' + (r.height - 14 - (RATIO_HEAD + (rows - 1) * RATIO_ROW)) + ')');
 
-  svg.select('.edge-key').attr('transform', 'translate(12,' + (dims().h - 34) + ')');
+  svg.select('.edge-key').attr('transform', 'translate(12,' + (dims().h - 20) + ')');
 }
 
-function updateMapLegend(min, max) {
-  const fmtVal = v => state.metric === 'share' ? pct(v) : fmt(Math.round(v));
+function updateMapLegend(max, classes) {
   const name = selectedIndex === null ? '' : label(selectedIndex);
   mapSvg.select('.legend-title').text(selectedIndex === null ? ''
-    : vsExpected() ? CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' from ' + name +
-                     ' vs. expected'
-    : state.metric === 'share' ? 'Share of ' + name + '’s ' + CFG.VALUE_LABEL
-    : CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' from ' + name);
+    : 'Share of ' + name + '’s ' + CFG.VALUE_LABEL);
 
-  // A diverging, classed legend under vs. expected; the gradient bar otherwise. With
+  // The gradient bar under share, the classed legend under the ranked metrics. With
   // nothing selected the dots wear their line colours, which the sidebar legends, so
-  // a flow ramp here would describe nothing on the map.
-  const classed = vsExpected() && selectedIndex !== null;
-  mapSvg.selectAll('.legend-bar, .legend-min, .legend-max')
-    .style('display', classed || selectedIndex === null ? 'none' : null);
-  mapSvg.select('.legend-steps').style('display', classed ? null : 'none');
+  // a flow legend here would describe nothing on the map.
+  const classed = classes !== null && selectedIndex !== null;
+  mapSvg.select('.map-legend').style('display', classed || selectedIndex === null ? 'none' : null);
+  mapSvg.select('.ratio-legend').style('display', classed ? null : 'none');
+  if (classed) {
+    renderRatioLegend(CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' from ' + name +
+                      ' vs. expected', classes.rows);
+  }
   svg.select('.edge-key').style('display', classed ? null : 'none');
-  mapSvg.select('.legend-min').text(fmtVal(min));
-  mapSvg.select('.legend-max').text(fmtVal(max));
+  svg.select('.edge-key-over').style('display', state.metric === 'over' ? null : 'none');
+  svg.select('.edge-key-under').style('display', state.metric === 'under' ? null : 'none');
+  mapSvg.select('.legend-min').text(pct(0));
+  mapSvg.select('.legend-max').text(pct(max));
 }
 
 // ── Group legend ─────────────────────────────────────────────────────────────

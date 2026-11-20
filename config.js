@@ -68,29 +68,32 @@ export const IN_LABEL    = 'Arrivals';
 // What the node colouring means — the heading over the colour legend.
 export const GROUP_LABEL = 'Trunk line';
 
-// The two edge-weight metrics. 'share' divides each flow by the origin's own
-// outbound total; 'count' uses the raw stored value. The hints explain the
-// consequence of each choice, which differs by dataset — rewrite them.
+// The three ways to pick and weight a node's destinations. 'share' takes its biggest
+// flows and divides each by the origin's own outbound total. 'over' and 'under' take
+// the flows furthest above or below what a model expects, ranked by the ratio; they
+// are offered only when the data file carries the ranked lists (see DATA_FORMAT.md).
+// The hints explain the consequence of each choice, which differs by dataset —
+// rewrite them. The page appends the data file's floor on expected to the last two.
 export const SHARE_METRIC_LABEL = 'Share of the station’s riders';
 export const SHARE_METRIC_HINT  =
-  'Where this station’s own riders go, so small stations read as clearly as big ones. ' +
-  'The map ramp rescales to each selection.';
+  'The station’s biggest destinations, as a share of its own riders, so small stations read ' +
+  'as clearly as big ones. The map ramp rescales to each selection.';
 
-export const COUNT_METRIC_LABEL = 'Estimated riders';
-export const COUNT_METRIC_HINT  =
-  'Raw estimates on one system-wide ramp, so selections are comparable and quiet stations stay pale.';
+export const OVER_METRIC_LABEL = 'Most over expected';
+export const OVER_METRIC_HINT  =
+  'The destinations whose riders most exceed what a gravity model predicts from how busy both ' +
+  'stations are and how far apart they are. Ranked by the ratio, not by size, so a quiet but ' +
+  'unusually strong tie shows up.';
 
-// The third metric, offered only when the data file carries an expected value per
-// edge (see DATA_FORMAT.md). It divides each flow by a model's prediction.
-export const EXPECTED_METRIC_LABEL = 'Vs. expected';
-export const EXPECTED_METRIC_HINT  =
-  'Riders divided by what a gravity model predicts from how busy both stations are and how ' +
-  'far apart they are. Orange edges and red dots: more riders than expected; blue: fewer.';
+export const UNDER_METRIC_LABEL = 'Most under expected';
+export const UNDER_METRIC_HINT  =
+  'The destinations with the fewest riders compared with what the same model predicts, ' +
+  'ranked by the ratio.';
 
 // Sidebar control headings and the two panel captions.
 export const PERIOD_LABEL      = 'Time of day';   // set to '' if your data has one period
 export const NODE_PICKER_LABEL = 'Station';
-export const METRIC_LABEL      = 'Edge weight';
+export const METRIC_LABEL      = 'Rank destinations by';
 export const TOP_N_LABEL       = 'Destinations shown';
 export const SECOND_ORDER_LABEL = 'Link destinations to each other';
 
@@ -111,7 +114,7 @@ export const STAT_TOTAL_LABEL    = 'Trips this period';
 
 export const DEFAULT_TOP_N        = 25;
 export const MIN_TOP_N            = 5;
-export const DEFAULT_METRIC       = 'share';   // 'share' | 'count' | 'expected'
+export const DEFAULT_METRIC       = 'share';   // 'share' | 'over' | 'under'
 export const DEFAULT_SECOND_ORDER = true;
 export const PLAY_INTERVAL_MS     = 1600;      // period auto-advance
 
@@ -135,11 +138,12 @@ export const BASEMAP_LINE       = '#2f2f2f';
 export const DEFAULT_GROUP_COLOR = '#999';    // nodes whose group has no colour
 export const SELECTION_COLOR    = '#fff';
 
-// Vs. expected is diverging about 1×, so it is classed rather than ramped: Brewer
-// RdBu, five classes, reversed so more-than-expected is warm, with breaks
-// symmetric in log space (0.8 and 1.25 are reciprocals, as are 0.5 and 2).
-export const RATIO_BREAKS = [0.5, 0.8, 1.25, 2];
-export const RATIO_COLORS = ['#0571b0', '#92c5de', '#f7f7f7', '#f4a582', '#ca0020'];
+// The two ranked metrics are classed rather than ramped: five quantile classes of
+// the ratios in view, palest first, one hue per direction so "over" and "under" can
+// never be confused — Brewer OrRd and Blues. The page darkens toward whichever end
+// is furthest from expected.
+export const OVER_COLORS  = ['#fef0d9', '#fdcc8a', '#fc8d59', '#e34a33', '#b30000'];
+export const UNDER_COLORS = ['#eff3ff', '#bdd7e7', '#6baed6', '#3182bd', '#08519c'];
 export const EDGE_OVER    = '#f0a04b';   // network edges carrying more than expected
 export const EDGE_UNDER   = '#5b8fc9';   // … and fewer
 
