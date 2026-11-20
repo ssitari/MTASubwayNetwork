@@ -41,7 +41,7 @@ are weighted. There are three choices:
   outer-borough station would have no legible structure at all. The share metric asks a different
   question — of everyone who boards *here*, where do they actually go? — and it makes small
   stations as readable as large ones.
-- **Most over expected** and **Most under expected** — the destinations furthest above or below
+- **More riders than predicted** and **Fewer riders than predicted** — the destinations furthest above or below
   what a gravity model predicts, ranked by that ratio rather than by size. See
   [Vs. expected](#vs-expected).
 
@@ -70,7 +70,7 @@ for it, so what stands out is what busyness and distance cannot explain. It is t
 They also *choose* the destinations by that ratio. Choosing by riders and only colouring by the
 ratio, as an earlier version did, buried exactly the ties this view exists to find: a quiet pair
 with an unusually strong link never made a station's busiest 50. Ranked by ratio, **17%** of the
-destinations in a station's AM "most over" top 25 are ones its busiest-50 list never contained.
+destinations in a station's AM *more riders than predicted* top 25 are ones its busiest-50 list never contained.
 At Flushing-Main St it is 12 of 25.
 
 ### The model
@@ -164,10 +164,10 @@ considered and deferred. The line structure is worth seeing first.
 - **Network (left)** — the selected complex plus its top destinations under the current ranking,
   sized by total traffic and colored by trunk line. With *Link destinations to each other* on,
   edges among the destinations themselves are drawn too, from each destination's own list for the
-  same ranking — under *most over*, a link between two destinations means they too ride more than
+  same ranking — under *more riders than predicted*, a link between two destinations means they too ride more than
   expected. This is what turns a bare star into a graph with visible clusters. Under the two
   vs. expected rankings, edges are orange (over) or blue (under) and thicker the further from
-  expected; under *most over*, the further above expected a pair is, the harder it pulls its nodes
+  expected; under *more riders than predicted*, the further above expected a pair is, the harder it pulls its nodes
   together.
 - **Map (right)** — all 424 complexes. Under share, the selection's stored destinations are
   shaded on a sequential scale. Under the vs. expected rankings they fall into five quantile

@@ -79,13 +79,13 @@ export const SHARE_METRIC_HINT  =
   'The station’s biggest destinations, as a share of its own riders, so small stations read ' +
   'as clearly as big ones. The map ramp rescales to each selection.';
 
-export const OVER_METRIC_LABEL = 'Most over expected';
+export const OVER_METRIC_LABEL = 'More riders than predicted';
 export const OVER_METRIC_HINT  =
   'The destinations whose riders most exceed what a gravity model predicts from how busy both ' +
   'stations are and how far apart they are. Ranked by the ratio, not by size, so a quiet but ' +
   'unusually strong tie shows up.';
 
-export const UNDER_METRIC_LABEL = 'Most under expected';
+export const UNDER_METRIC_LABEL = 'Fewer riders than predicted';
 export const UNDER_METRIC_HINT  =
   'The destinations with the fewest riders compared with what the same model predicts, ' +
   'ranked by the ratio.';

@@ -32,6 +32,7 @@ const container = document.getElementById('chart-container');
 const svg       = d3.select('#chart');
 const g         = svg.append('g');
 const linkLayer = g.append('g').attr('class', 'links');
+const arrowLayer = g.append('g').attr('class', 'arrows').attr('pointer-events', 'none');
 const nodeLayer = g.append('g').attr('class', 'nodes');
 
 const mapContainer = document.getElementById('map-container');
@@ -349,6 +350,8 @@ function draw() {
   const rScale = d3.scaleSqrt().domain([0, maxNode]).range(CFG.NODE_RADIUS_RANGE);
   const wScale = d3.scalePow().exponent(0.5).domain([0, maxWeight])
     .range(CFG.EDGE_WIDTH_RANGE).clamp(true);
+  // Radius on the node itself, so ticked() can stop a spoke at its destination's rim.
+  simNodes.forEach(d => { d.r = rScale(bothTotal(d.node)); });
 
   if (!simulation) {
     simulation = d3.forceSimulation(simNodes)
@@ -364,16 +367,37 @@ function draw() {
   }
 
   // ── Links ──
+  // Coloured by the metric, not by each edge's own ratio: every edge under "over" comes
+  // from an over list, and a stored 0.999× from rounding should not flip to blue.
+  const edgeColor = state.metric === 'over' ? CFG.EDGE_OVER
+    : state.metric === 'under' ? CFG.EDGE_UNDER : '#8a8a8a';
+  simLinks.forEach(l => { l.w = wScale(weightOf(l)); });
+
   const linkSel = linkLayer.selectAll('line').data(simLinks, l => l.s + '-' + l.t);
   linkSel.exit().remove();
   linkSel.enter().append('line')
     .merge(linkSel)
-    // Coloured by the metric, not by each edge's own ratio: every edge under "most over"
-    // comes from an over list, and a stored 0.999× from rounding should not flip to blue.
-    .attr('stroke', state.metric === 'over' ? CFG.EDGE_OVER
-      : state.metric === 'under' ? CFG.EDGE_UNDER : '#8a8a8a')
-    .attr('stroke-width', l => wScale(weightOf(l)))
+    .attr('stroke', edgeColor)
+    .attr('stroke-width', l => l.w)
     .attr('stroke-opacity', l => l.primary ? 0.75 : 0.16);
+
+  // ── Arrowheads ──
+  // On the spokes only. Every spoke runs from the selection outward, so the arrows say
+  // "riders leaving this station" -- the network never shows the inbound half. Second-
+  // order edges get none: most come in overlapping A→B / B→A pairs, and heads at both
+  // ends of hundreds of faint lines were clutter, not information. Each head is its own
+  // triangle sized to its spoke, since one fixed-size SVG marker vanished on the
+  // thickest spokes and swamped the thinnest.
+  simLinks.forEach(l => { l.alen = 5 + 1.4 * l.w; });
+  const arrowSel = arrowLayer.selectAll('path')
+    .data(simLinks.filter(l => l.primary), l => l.s + '-' + l.t);
+  arrowSel.exit().remove();
+  arrowSel.enter().append('path')
+    .merge(arrowSel)
+    .attr('d', l => { const h = 2.5 + 0.9 * l.w;
+      return 'M0,0L' + (-l.alen) + ',' + (-h) + 'L' + (-l.alen) + ',' + h + 'Z'; })
+    .attr('fill', edgeColor)
+    .attr('fill-opacity', 0.9);
 
   // ── Nodes ──
   const nodeSel = nodeLayer.selectAll('g.node').data(simNodes, d => d.node);
@@ -529,10 +553,31 @@ function updateSubtitles() {
 }
 
 // ── Tick / drag ──────────────────────────────────────────────────────────────
+// Where a spoke's arrowhead tip sits: on the destination's rim (plus a hair, so the
+// node's own stroke does not cover it), and the unit vector it points along.
+function spokeTip(l) {
+  const dx = l.target.x - l.source.x, dy = l.target.y - l.source.y;
+  const len = Math.hypot(dx, dy) || 1;
+  const back = Math.min(len, (l.target.r || 0) + 1.5);
+  return { x: l.target.x - dx / len * back, y: l.target.y - dy / len * back,
+           ux: dx / len, uy: dy / len, room: len - back };
+}
+
 function ticked() {
+  // Spokes stop at the arrowhead's base, so the square end of a thick line cannot poke
+  // out past the point; other edges run centre to centre as before.
+  const end = (l, axis) => {
+    if (!l.primary) return l.target[axis];
+    const t = spokeTip(l), back = Math.min(l.alen, t.room);
+    return axis === 'x' ? t.x - t.ux * back : t.y - t.uy * back;
+  };
   linkLayer.selectAll('line')
     .attr('x1', d => d.source.x).attr('y1', d => d.source.y)
-    .attr('x2', d => d.target.x).attr('y2', d => d.target.y);
+    .attr('x2', d => end(d, 'x')).attr('y2', d => end(d, 'y'));
+  arrowLayer.selectAll('path').attr('transform', l => {
+    const t = spokeTip(l);
+    return 'translate(' + t.x + ',' + t.y + ') rotate(' + (Math.atan2(t.uy, t.ux) * 180 / Math.PI) + ')';
+  });
   nodeLayer.selectAll('g.node').attr('transform', d => 'translate(' + d.x + ',' + d.y + ')');
 }
 
@@ -859,8 +904,11 @@ function buildMapLegend() {
    ['under', CFG.EDGE_UNDER, 'Fewer ' + CFG.VALUE_LABEL + ' than expected · thicker = further below']]
     .forEach(([metric, color, text]) => {
       const row = ek.append('g').attr('class', 'edge-key-' + metric);
-      row.append('line').attr('x1', 0).attr('x2', 18).attr('stroke', color).attr('stroke-width', 3);
-      row.append('text').text(text).attr('x', 24).attr('dy', '0.35em')
+      // A 3px spoke with the head draw() would give it.
+      row.append('line').attr('x1', 0).attr('x2', 13).attr('stroke', color).attr('stroke-width', 3);
+      row.append('path').attr('d', 'M0,0L-9,-5L-9,5Z').attr('transform', 'translate(22,0)')
+        .attr('fill', color).attr('fill-opacity', 0.9);
+      row.append('text').text(text).attr('x', 28).attr('dy', '0.35em')
         .attr('fill', '#999').attr('font-size', '10px').style('font-family', 'system-ui, sans-serif');
     });
   positionMapLegend();

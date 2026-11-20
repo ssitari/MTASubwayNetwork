@@ -122,7 +122,8 @@ A node with no outbound flow may be omitted, or given an empty array.
 ### Ranked lists: `over` and `under`
 
 Optional. When both are present, the viewer offers two more ways to rank
-destinations — *most over expected* and *most under expected* — which pick each
+destinations — *more riders than predicted* and *fewer riders than predicted* (the
+MTA page's labels; set them in `config.js`) — which pick each
 node's destinations by `value / expected` instead of by `value`. Without them, only
 the share ranking is offered.
 
@@ -138,7 +139,7 @@ They have exactly the shape of `ego`, but every entry must carry its expected va
 - **`over`** holds only pairs with `value > expected`, sorted by `value / expected`
   **descending**; **`under`** only pairs with `value < expected`, sorted
   **ascending**. Keep each list to its own side of 1×, even if that leaves it short:
-  a "most over" list padded with pairs that are actually under would contradict
+  an `over` list padded with pairs that are actually under would contradict
   its own name.
 - **At most `meta.top_n` entries** each; fewer is fine, and the page says so.
 - **Every entry needs a positive `expected`.** It is all or nothing: if any entry
