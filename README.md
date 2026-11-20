@@ -168,12 +168,14 @@ considered and deferred. The line structure is worth seeing first.
   expected. This is what turns a bare star into a graph with visible clusters. Under the two
   vs. expected rankings, edges are orange (over) or blue (under) and thicker the further from
   expected; under *more riders than predicted*, the further above expected a pair is, the harder it pulls its nodes
-  together.
-- **Map (right)** — all 424 complexes. Under share, the selection's stored destinations are
-  shaded on a sequential scale. Under the vs. expected rankings they fall into five quantile
-  classes of the ratios in view — ColorBrewer OrRd above expected, Blues below — darkest furthest
-  from expected, with each class labelled by its range. Complexes not in the stored list stay
-  unshaded. The map is drawn from the complete stored list — up to 50 — while the network draws
+  together. Spokes from the selection carry arrowheads: the network shows riders *leaving* it.
+  An edge legend in the corner shows the widest, middle and narrowest edge on screen, each
+  labelled with the share or ratio it stands for.
+- **Map (right)** — all 424 complexes. The selection's stored destinations fall into five
+  quantile classes of the values in view, each labelled with its range — ColorBrewer YlGnBu for
+  share, OrRd above expected, Blues below — darkest for the biggest share or furthest from
+  expected. The map is classed rather than continuously shaded, so every colour on it matches a
+  legend entry. Complexes not in the stored list stay unshaded. The map is drawn from the complete stored list — up to 50 — while the network draws
   only as many as the slider asks for, so the map always shows at least as much as the network does.
 - **Time of day** — four periods; the play button cycles them. Watching the AM and PM peaks in
   sequence is the point of the time dimension: the same station's flows largely reverse.

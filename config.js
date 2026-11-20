@@ -77,7 +77,7 @@ export const GROUP_LABEL = 'Trunk line';
 export const SHARE_METRIC_LABEL = 'Share of the station’s riders';
 export const SHARE_METRIC_HINT  =
   'The station’s biggest destinations, as a share of its own riders, so small stations read ' +
-  'as clearly as big ones. The map ramp rescales to each selection.';
+  'as clearly as big ones. The map’s classes rescale to each selection.';
 
 export const OVER_METRIC_LABEL = 'More riders than predicted';
 export const OVER_METRIC_HINT  =
@@ -125,23 +125,23 @@ export const OPEN_ON = 'none';
 
 // ============================================================
 //  COLOUR
-//  COLOR_RAMP is the name of any d3 sequential interpolator —
-//  'interpolateYlGnBu', 'interpolateViridis', 'interpolateMagma'…
-//  It drives both the map shading and its legend gradient.
+//  The map is always classed, never a continuous ramp: five quantile
+//  classes of the values in view, each list palest first, legend labelled
+//  with each class's range. Swap in any five-class ColorBrewer scheme.
 // ============================================================
 
-export const COLOR_RAMP = 'interpolateYlGnBu';
+// Share: Brewer YlGnBu, darkest = the biggest share of the station's riders.
+export const SHARE_COLORS = ['#ffffcc', '#a1dab4', '#41b6c4', '#2c7fb8', '#253494'];
 
 export const LAND_COLOR         = '#242424';  // nodes with no flow from the selection
 export const BASEMAP_FILL       = '#1e1e1e';
 export const BASEMAP_LINE       = '#2f2f2f';
 export const DEFAULT_GROUP_COLOR = '#999';    // nodes whose group has no colour
-export const SELECTION_COLOR    = '#fff';
+export const SELECTION_COLOR    = '#fff';     // ring around the selected node
 
-// The two ranked metrics are classed rather than ramped: five quantile classes of
-// the ratios in view, palest first, one hue per direction so "over" and "under" can
-// never be confused — Brewer OrRd and Blues. The page darkens toward whichever end
-// is furthest from expected.
+// The two ranked metrics: one hue per direction so "over" and "under" can never be
+// confused — Brewer OrRd and Blues. The page darkens toward whichever end is furthest
+// from expected.
 export const OVER_COLORS  = ['#fef0d9', '#fdcc8a', '#fc8d59', '#e34a33', '#b30000'];
 export const UNDER_COLORS = ['#eff3ff', '#bdd7e7', '#6baed6', '#3182bd', '#08519c'];
 export const EDGE_OVER    = '#f0a04b';   // network edges carrying more than expected

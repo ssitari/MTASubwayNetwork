@@ -25,7 +25,6 @@ let playTimer = null;
 let simulation = null;
 let projection = null;
 
-const ramp = d3[CFG.COLOR_RAMP];
 
 // ── SVG / layout ─────────────────────────────────────────────────────────────
 const container = document.getElementById('chart-container');
@@ -41,17 +40,17 @@ const mapG         = mapSvg.append('g');
 const basemapLayer = mapG.append('g').attr('class', 'basemap');
 const dotLayer     = mapG.append('g').attr('class', 'dots');
 
-// Sequential ramp for "share of the selected node's flow arriving here".
-const shareScale = d3.scaleSequential(ramp);
-// Under the two ranked metrics the selected dot is dark in a white ring, not white:
-// each scheme's palest class is near-white and the two were indistinguishable.
-const SELECTED_FILL_CLASSED = '#141414';
+// The selected dot is dark in a white ring, not white: every scheme's palest class is
+// near-white and the two were indistinguishable.
+const SELECTED_FILL = '#141414';
 
 const tooltip = d3.select('#tooltip');
 
 const fmt  = d3.format(',d');
 const fmt1 = d3.format(',.1f');
 const pct  = d3.format('.1%');
+// Shares in legends: one decimal, or two below 0.1% so a small class does not read "0.0%".
+const fmtShare = v => (v > 0 && v < 0.001 ? d3.format('.2%') : pct)(v);
 
 function dims() {
   const r = container.getBoundingClientRect();
@@ -398,6 +397,7 @@ function draw() {
       return 'M0,0L' + (-l.alen) + ',' + (-h) + 'L' + (-l.alen) + ',' + h + 'Z'; })
     .attr('fill', edgeColor)
     .attr('fill-opacity', 0.9);
+  updateEdgeLegend(edgeColor);
 
   // ── Nodes ──
   const nodeSel = nodeLayer.selectAll('g.node').data(simNodes, d => d.node);
@@ -476,14 +476,9 @@ function paint() {
     }
   }
 
-  // Share: a ramp rescaled to the selection, so its own biggest destination is always
-  // the darkest. Ranked metrics: classed, see ratioClasses().
-  const maxVal = d3.max(Array.from(values.values())) || 1;
-  shareScale.domain([0, maxVal]);
-  const classes = byRatio() ? ratioClasses(Array.from(values.values())) : null;
-  const colorOf = i => !values.has(i) ? CFG.LAND_COLOR
-    : classes ? classes.scale(values.get(i)) : shareScale(values.get(i));
-  const selFill = byRatio() ? SELECTED_FILL_CLASSED : CFG.SELECTION_COLOR;
+  const classes = mapClasses(Array.from(values.values()));
+  const colorOf = i => (values.has(i) ? classes.scale(values.get(i)) : CFG.LAND_COLOR);
+  const selFill = SELECTED_FILL;
 
   const inNetwork = new Set(simNodes.map(d => d.node));
 
@@ -507,25 +502,29 @@ function paint() {
     .attr('stroke-width', n => n.i === sel ? 2 : (inNetwork.has(n.i) ? 1.1 : 0.4))
     .attr('opacity', n => (sel === null || n.i === sel || values.has(n.i)) ? 1 : 0.25);
 
-  updateMapLegend(maxVal, classes);
+  updateMapLegend(classes);
   updateSubtitles();
 }
 
-// Ranked metrics: five quantile classes of the ratios in view, one hue per direction
-// (Brewer OrRd over, Blues under), darkest = furthest from expected. Fixed breaks around
-// 1× would not work here: every value in an over list is above 1×, and most would land
-// in a single top class. Rows run most extreme first and are labelled with the range of
-// values actually in each class.
-function ratioClasses(values) {
-  const range = state.metric === 'over' ? CFG.OVER_COLORS : [...CFG.UNDER_COLORS].reverse();
+// Every map metric is classed, never ramped: five quantile classes of the values in
+// view, each labelled with the range of values actually in it, strongest first. Share
+// uses Brewer YlGnBu, darkest = the biggest share. The ranked metrics use one hue per
+// direction (OrRd over, Blues under), darkest = furthest from expected. Fixed breaks
+// would not work for those: every value in an over list is above 1×, and most would
+// land in a single top class.
+function mapClasses(values) {
+  const under = state.metric === 'under';
+  const range = under ? [...CFG.UNDER_COLORS].reverse()
+    : state.metric === 'over' ? CFG.OVER_COLORS : CFG.SHARE_COLORS;
+  const f = byRatio() ? fmtRatio : fmtShare;
   const scale = d3.scaleQuantile().domain(values).range(range);
-  const rows = range.map(color => {
+  const rows = values.length ? range.map(color => {
     const inClass = values.filter(v => scale(v) === color);
     if (!inClass.length) return null;
-    const [lo, hi] = d3.extent(inClass).map(fmtRatio);
+    const [lo, hi] = d3.extent(inClass).map(f);
     return { color, label: lo === hi ? lo : lo + ' – ' + hi };
-  }).filter(Boolean);
-  if (state.metric === 'over') rows.reverse();
+  }).filter(Boolean) : [];
+  if (!under) rows.reverse();
   return { scale, rows };
 }
 
@@ -869,107 +868,100 @@ function centreMap() {
     ((r.height - (y1 - y0)) / 2 - y0) + ')');
 }
 
+// ── Legends ──────────────────────────────────────────────────────────────────
+// Two legends, both rebuilt on every repaint because their labels are values in view:
+// the map's colour classes (bottom-left of the map) and the network's edges
+// (bottom-left of the network panel). Neither shows with nothing selected -- the dots
+// then wear their line colours, which the sidebar legends.
 function buildMapLegend() {
-  const defs = mapSvg.append('defs');
-  const grad = defs.append('linearGradient').attr('id', 'grad-share');
-  d3.range(0, 1.001, 0.05).forEach(t => {
-    grad.append('stop')
-      .attr('offset', (t * 100).toFixed(0) + '%')
-      .attr('stop-color', ramp(t));
-  });
-
-  const lg = mapSvg.append('g').attr('class', 'map-legend').attr('pointer-events', 'none');
-  lg.append('text').attr('class', 'legend-title')
-    .attr('y', -6).attr('fill', '#bbb').attr('font-size', '10px')
-    .attr('font-weight', '600').style('font-family', 'system-ui, sans-serif');
-  lg.append('rect').attr('class', 'legend-bar')
-    .attr('y', 0).attr('height', 8).attr('fill', 'url(#grad-share)');
-  lg.append('text').attr('class', 'legend-min')
-    .attr('y', 19).attr('fill', '#888').attr('font-size', '9px')
-    .style('font-family', 'system-ui, sans-serif');
-  lg.append('text').attr('class', 'legend-max')
-    .attr('y', 19).attr('text-anchor', 'end').attr('fill', '#888').attr('font-size', '9px')
-    .style('font-family', 'system-ui, sans-serif');
-
-  // Ranked metrics: a classed legend, one row per class, rebuilt on every repaint because
-  // its labels are the ranges of the values in view. Positioned from the bottom up.
-  mapSvg.append('g').attr('class', 'ratio-legend').attr('pointer-events', 'none')
+  mapSvg.append('g').attr('class', 'map-classes').attr('pointer-events', 'none')
     .style('display', 'none');
-
-  // The network's edge colours only mean something under the ranked metrics, so the key
-  // lives in the network panel and is shown only then, one row for the metric in use.
-  const ek = svg.append('g').attr('class', 'edge-key').attr('pointer-events', 'none')
+  svg.append('g').attr('class', 'edge-legend').attr('pointer-events', 'none')
     .style('display', 'none');
-  [['over', CFG.EDGE_OVER, 'More ' + CFG.VALUE_LABEL + ' than expected · thicker = further above'],
-   ['under', CFG.EDGE_UNDER, 'Fewer ' + CFG.VALUE_LABEL + ' than expected · thicker = further below']]
-    .forEach(([metric, color, text]) => {
-      const row = ek.append('g').attr('class', 'edge-key-' + metric);
-      // A 3px spoke with the head draw() would give it.
-      row.append('line').attr('x1', 0).attr('x2', 13).attr('stroke', color).attr('stroke-width', 3);
-      row.append('path').attr('d', 'M0,0L-9,-5L-9,5Z').attr('transform', 'translate(22,0)')
-        .attr('fill', color).attr('fill-opacity', 0.9);
-      row.append('text').text(text).attr('x', 28).attr('dy', '0.35em')
-        .attr('fill', '#999').attr('font-size', '10px').style('font-family', 'system-ui, sans-serif');
-    });
   positionMapLegend();
 }
 
-const RATIO_ROW = 14;   // px per class row in the ranked-metric legend
-const RATIO_HEAD = 26;  // title + note above the rows
+const LEGEND_ROW = 14;   // px per row
+const LEGEND_FONT = 'system-ui, sans-serif';
 
-function renderRatioLegend(title, rows) {
-  const lg = mapSvg.select('.ratio-legend');
+// Draws a legend into group `lg`: a bold title, grey note lines, then rows. A row is a
+// colour swatch ({ color }) or a sample edge ({ line: width, color, arrow }), with a label.
+function renderLegend(lg, title, notes, rows) {
   lg.selectAll('*').remove();
-  const font = 'system-ui, sans-serif';
   lg.append('text').text(title).attr('y', 0).attr('fill', '#bbb').attr('font-size', '10px')
-    .attr('font-weight', '600').style('font-family', font);
-  lg.append('text').text('Ranges adjust to current view').attr('y', 12).attr('fill', '#777')
-    .attr('font-size', '9px').style('font-family', font);
-  rows.forEach((r, k) => {
-    const y = RATIO_HEAD + k * RATIO_ROW;
-    lg.append('rect').attr('x', 0).attr('y', y - 8).attr('width', 14).attr('height', 9)
-      .attr('fill', r.color);
-    lg.append('text').text(r.label).attr('x', 20).attr('y', y).attr('fill', '#999')
-      .attr('font-size', '9px').style('font-family', font);
+    .attr('font-weight', '600').style('font-family', LEGEND_FONT);
+  notes.forEach((n, k) => {
+    lg.append('text').text(n).attr('y', 12 * (k + 1)).attr('fill', '#777')
+      .attr('font-size', '9px').style('font-family', LEGEND_FONT);
   });
-  lg.datum(rows.length);
-  positionMapLegend();
+  const head = 12 * notes.length + 14;
+  rows.forEach((r, k) => {
+    const y = head + k * LEGEND_ROW;
+    if (r.line !== undefined) {
+      const x2 = r.arrow ? 21 : 30;
+      lg.append('line').attr('x1', 0).attr('x2', x2).attr('y1', y - 3).attr('y2', y - 3)
+        .attr('stroke', r.color).attr('stroke-width', r.line).attr('stroke-opacity', 0.75);
+      // the head draw() gives a 3px spoke
+      if (r.arrow) {
+        lg.append('path').attr('d', 'M0,0L-9,-5L-9,5Z')
+          .attr('transform', 'translate(30,' + (y - 3) + ')')
+          .attr('fill', r.color).attr('fill-opacity', 0.9);
+      }
+    } else {
+      lg.append('rect').attr('x', 0).attr('y', y - 8).attr('width', 14).attr('height', 9)
+        .attr('fill', r.color);
+    }
+    lg.append('text').text(r.label).attr('x', r.line !== undefined ? 38 : 20).attr('y', y)
+      .attr('fill', '#999').attr('font-size', '9px').style('font-family', LEGEND_FONT);
+  });
+  lg.datum(head + (rows.length - 1) * LEGEND_ROW);   // height, for bottom-anchoring
 }
 
 function positionMapLegend() {
   const r = mapContainer.getBoundingClientRect();
-  const lw = Math.min(200, r.width - 24);
-  mapSvg.select('.map-legend').attr('transform', 'translate(12,' + (r.height - 30) + ')');
-  mapSvg.select('.legend-bar').attr('width', lw);
-  mapSvg.select('.legend-max').attr('x', lw);
-
-  const rows = mapSvg.select('.ratio-legend').datum() || 0;
-  mapSvg.select('.ratio-legend').attr('transform',
-    'translate(12,' + (r.height - 14 - (RATIO_HEAD + (rows - 1) * RATIO_ROW)) + ')');
-
-  svg.select('.edge-key').attr('transform', 'translate(12,' + (dims().h - 20) + ')');
+  const mh = mapSvg.select('.map-classes').datum() || 0;
+  mapSvg.select('.map-classes').attr('transform', 'translate(12,' + (r.height - 14 - mh) + ')');
+  const eh = svg.select('.edge-legend').datum() || 0;
+  svg.select('.edge-legend').attr('transform', 'translate(12,' + (dims().h - 14 - eh) + ')');
 }
 
-function updateMapLegend(max, classes) {
-  const name = selectedIndex === null ? '' : label(selectedIndex);
-  mapSvg.select('.legend-title').text(selectedIndex === null ? ''
-    : 'Share of ' + name + '’s ' + CFG.VALUE_LABEL);
+function updateMapLegend(classes) {
+  const lg = mapSvg.select('.map-classes');
+  if (selectedIndex === null || !classes.rows.length) { lg.style('display', 'none'); return; }
+  const name = label(selectedIndex);
+  renderLegend(lg.style('display', null),
+    byRatio()
+      ? CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' from ' + name + ' vs. expected'
+      : 'Share of ' + name + '’s ' + CFG.VALUE_LABEL,
+    ['Ranges adjust to current view'], classes.rows);
+  positionMapLegend();
+}
 
-  // The gradient bar under share, the classed legend under the ranked metrics. With
-  // nothing selected the dots wear their line colours, which the sidebar legends, so
-  // a flow legend here would describe nothing on the map.
-  const classed = classes !== null && selectedIndex !== null;
-  mapSvg.select('.map-legend').style('display', classed || selectedIndex === null ? 'none' : null);
-  mapSvg.select('.ratio-legend').style('display', classed ? null : 'none');
-  if (classed) {
-    renderRatioLegend(CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' from ' + name +
-                      ' vs. expected', classes.rows);
+// The network's edge legend: three sample widths -- the widest, middle and narrowest
+// edge on screen, each labelled with its own value -- and the arrow, which in the two
+// ranked metrics also carries the colour's meaning.
+function updateEdgeLegend(edgeColor) {
+  const lg = svg.select('.edge-legend');
+  if (selectedIndex === null || !simLinks.length) { lg.style('display', 'none'); return; }
+  const byW = simLinks.slice().sort((a, b) => b.w - a.w);
+  const picks = [byW[0], byW[Math.floor((byW.length - 1) / 2)], byW[byW.length - 1]];
+  const valueOf = l => byRatio() ? fmtRatio(l.ratio) : fmtShare(l.share);
+  const rows = [];
+  for (const l of picks) {
+    if (!rows.some(r => r.label === valueOf(l))) rows.push({ line: l.w, color: edgeColor, label: valueOf(l) });
   }
-  svg.select('.edge-key').style('display', classed ? null : 'none');
-  svg.select('.edge-key-over').style('display', state.metric === 'over' ? null : 'none');
-  svg.select('.edge-key-under').style('display', state.metric === 'under' ? null : 'none');
-  mapSvg.select('.legend-min').text(pct(0));
-  mapSvg.select('.legend-max').text(pct(max));
+  const name = label(selectedIndex);
+  rows.push({ line: 3, color: edgeColor, arrow: true,
+    label: state.metric === 'over' ? 'More ' + CFG.VALUE_LABEL + ' than expected, leaving ' + name
+      : state.metric === 'under' ? 'Fewer ' + CFG.VALUE_LABEL + ' than expected, leaving ' + name
+      : CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' leaving ' + name });
+  renderLegend(lg.style('display', null), 'Edge width',
+    [byRatio() ? CFG.VALUE_LABEL.replace(/^./, c => c.toUpperCase()) + ' vs. expected — ' +
+                 (state.metric === 'over' ? 'thicker is further above'
+                                          : 'thicker is further below')
+               : 'Share of the origin’s ' + CFG.VALUE_LABEL,
+     'Ranges adjust to current view'], rows);
+  positionMapLegend();
 }
 
 // ── Group legend ─────────────────────────────────────────────────────────────
